@@ -1,0 +1,5 @@
+# RØDECaster Pro II / Duo vendor HID control interface.
+# Lets members of the "companion" group open it from Bitfocus Companion.
+# Install: copy to /etc/udev/rules.d/, then
+#   sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=hidraw --action=add
+KERNEL=="hidraw*", ATTRS{idVendor}=="19f7", MODE:="0660", GROUP="companion", TAG+="uaccess"

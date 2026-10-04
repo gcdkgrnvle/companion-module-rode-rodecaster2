@@ -1,0 +1,28 @@
+{
+	"$schema": "../node_modules/@companion-module/base/assets/manifest.schema.json",
+	"type": "connection",
+	"id": "rode-rodecaster2",
+	"name": "rode-rodecaster2",
+	"shortname": "rodecaster2",
+	"description": "RØDECaster Pro II and Duo over USB HID: mutes, cue, levels, record, SMART pads, monitor, voice FX",
+	"version": "0.0.0",
+	"license": "MIT",
+	"repository": "git+https://github.com/gcdkgrnvle/companion-module-rode-rodecaster2.git",
+	"bugs": "https://github.com/gcdkgrnvle/companion-module-rode-rodecaster2/issues",
+	"maintainers": [
+		{
+			"name": "Tony Lomanto",
+			"email": "lomantodk@gmail.com"
+		}
+	],
+	"runtime": {
+		"type": "node22",
+		"api": "nodejs-ipc",
+		"apiVersion": "0.0.0",
+		"entrypoint": "../src/main.js"
+	},
+	"legacyIds": [],
+	"manufacturer": "RØDE",
+	"products": ["RØDECaster Pro II", "RØDECaster Duo"],
+	"keywords": ["rode", "rodecaster", "mixer", "podcast", "usb", "hid"]
+}
