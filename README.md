@@ -22,7 +22,7 @@ corepack enable
 yarn install
 ```
 
-Point Companion's *developer modules path* at a folder containing this repo (or a symlink to
+Point Companion's _developer modules path_ at a folder containing this repo (or a symlink to
 it). On Linux also install [`udev/50-rodecaster.rules`](udev/50-rodecaster.rules) and the
 `usbhid.quirks` kernel parameter described in [companion/HELP.md](companion/HELP.md).
 

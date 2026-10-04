@@ -1,0 +1,20 @@
+model = "duo"
+firmware = "1.7.4"
+transport = "tcp-bridge"
+capture_date = "2026-07-28"
+capture_source = "rc_audio_mixer full sync after factory GUI reconnect"
+sanitation = "examples/sanitize_full_sync.rs"
+sha256 = "b4f665dcace5f9d85552a940bfed655c080d441e97a4b3c9d3e043cd291a574d"
+
+expected_nodes = 870
+expected_properties = 6923
+expected_faders = 9
+expected_channels = 10
+expected_sources = 19
+expected_mixes_per_source = 13
+expected_input_sources = 19
+expected_headphones = 4
+expected_effects = 11
+expected_pads = 21
+expected_sip_call_slots = 3
+expected_sip_registrations = 2

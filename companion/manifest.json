@@ -18,11 +18,24 @@
 	"runtime": {
 		"type": "node22",
 		"api": "nodejs-ipc",
-		"apiVersion": "0.0.0",
-		"entrypoint": "../src/main.js"
+		"apiVersion": "2.0.4",
+		"entrypoint": "../src/main.js",
+		"permissions": {
+			"native-addons": true
+		}
 	},
 	"legacyIds": [],
 	"manufacturer": "RØDE",
-	"products": ["RØDECaster Pro II", "RØDECaster Duo"],
-	"keywords": ["rode", "rodecaster", "mixer", "podcast", "usb", "hid"]
+	"products": [
+		"RØDECaster Pro II",
+		"RØDECaster Duo"
+	],
+	"keywords": [
+		"rode",
+		"rodecaster",
+		"mixer",
+		"podcast",
+		"usb",
+		"hid"
+	]
 }

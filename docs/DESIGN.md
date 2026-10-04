@@ -38,21 +38,21 @@ drive the wrong channel).
 
 ## Feature to property map
 
-| Feature | Write | Read / feedback |
-| --- | --- | --- |
-| Channel mute | `CHANNEL[s].channelOutputMute` | same (+ desk `mutePressed` pushes) |
-| Cue | `CHANNEL[s].channelCueEnable` | same |
-| Channel level (dial, up/down) | unlink the strip's linked sends (`mixUnlinkRequest`), then `mixLevelWithAnchor` on each; opt-in | `mixLink`, `mixLevelWithAnchor`, `FADER[s].faderLevel` |
-| Restore faders | `mixLinkRequest` on every send this module unlinked | `mixLink` |
-| Monitor level / mute | `OUTPUT.outputMonLevel` (0-1), `OUTPUT.outputMonMute` | same |
-| Headphones off | `SYSTEM.disableAllHeadphoneOutputs` | same |
-| Panic mute | all strips `channelOutputMute` + monitor mute, previous state remembered | composed |
-| Record / pause / stop | `RECORDER.requestRecordState` 2 / 1 / 0 | `recordState` 0 ready, 1 paused, 2 recording, 3 no destination; elapsed time counted on the host |
-| Drop marker | `RECORDER.requestDropMarker` | – |
-| SMART pad | `PADBUTTON[slot].padButtonPressed` true then false (fallback: USB MIDI CC 35 with `SYSTEM.systemMidiControl`) | `PAD[n].padActive`, `padColourIndex`, `padName` |
-| Pad bank | `GUI.selectedBank` 0-7 | same |
-| Voice FX | `EFFECTS_PARAMETERS[n].{reverbOn,echoOn,pitchShiftOn,distortionOn,robotOn,voiceDisguiseOn}` | same |
-| Desk dial | `GUI.screenBrightness`, `GUI.activeButtonsBrightness`, `DUCKER.duckerDepth`, `OUTPUT.outputBTLevel` | same |
+| Feature                       | Write                                                                                                         | Read / feedback                                                                                  |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| Channel mute                  | `CHANNEL[s].channelOutputMute`                                                                                | same (+ desk `mutePressed` pushes)                                                               |
+| Cue                           | `CHANNEL[s].channelCueEnable`                                                                                 | same                                                                                             |
+| Channel level (dial, up/down) | unlink the strip's linked sends (`mixUnlinkRequest`), then `mixLevelWithAnchor` on each; opt-in               | `mixLink`, `mixLevelWithAnchor`, `FADER[s].faderLevel`                                           |
+| Restore faders                | `mixLinkRequest` on every send this module unlinked                                                           | `mixLink`                                                                                        |
+| Monitor level / mute          | `OUTPUT.outputMonLevel` (0-1), `OUTPUT.outputMonMute`                                                         | same                                                                                             |
+| Headphones off                | `SYSTEM.disableAllHeadphoneOutputs`                                                                           | same                                                                                             |
+| Panic mute                    | all strips `channelOutputMute` + monitor mute, previous state remembered                                      | composed                                                                                         |
+| Record / pause / stop         | `RECORDER.requestRecordState` 2 / 1 / 0                                                                       | `recordState` 0 ready, 1 paused, 2 recording, 3 no destination; elapsed time counted on the host |
+| Drop marker                   | `RECORDER.requestDropMarker`                                                                                  | –                                                                                                |
+| SMART pad                     | `PADBUTTON[slot].padButtonPressed` true then false (fallback: USB MIDI CC 35 with `SYSTEM.systemMidiControl`) | `PAD[n].padActive`, `padColourIndex`, `padName`                                                  |
+| Pad bank                      | `GUI.selectedBank` 0-7                                                                                        | same                                                                                             |
+| Voice FX                      | `EFFECTS_PARAMETERS[n].{reverbOn,echoOn,pitchShiftOn,distortionOn,robotOn,voiceDisguiseOn}`                   | same                                                                                             |
+| Desk dial                     | `GUI.screenBrightness`, `GUI.activeButtonsBrightness`, `DUCKER.duckerDepth`, `OUTPUT.outputBTLevel`           | same                                                                                             |
 
 Every write is verified by the desk's own push of the property; actions report failure when the
 echo does not arrive within one second.
