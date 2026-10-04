@@ -29,3 +29,31 @@ unlink the strip's sends from the physical fader for as long as it drives them. 
 physical fader, holding the volume dial, or the **Restore faders** action hands the strip back.
 If Companion dies while a strip is borrowed, the next start relinks it. The chain icons in the
 RØDE app toggle the very same setting, so a fader can always be restored by hand.
+
+### What the actions do on the desk
+
+- **Channel: Mute / Cue** write the strip's own mute and cue; the desk's LEDs follow.
+- **Channel: Volume up / down, Set volume** need _Let Companion drive channel levels_ ticked.
+  The strip is borrowed from its physical fader (every send that was linked is unlinked), the
+  sends are driven together, and the strip reads DIAL. Moving the physical fader, _Hand back
+  to fader_ or _Restore all faders_ relinks them. Sends you disabled or unlinked yourself are
+  never touched.
+- **Monitor** level and mute drive the rear speaker outputs. The default method writes the
+  level; _Emulate the big knob_ sends encoder ticks instead (only while the desk's knob is
+  assigned to the monitor).
+- **Headphones: All off** silences every headphone jack at once.
+- **Panic mute** mutes every strip, the monitor, Bluetooth and all headphones; releasing it
+  restores exactly what was unmuted before. (The desk's own emergency-mute flag does nothing
+  audible on firmware 1.7.3, so it is not used.)
+- **Record** starts, pauses and stops the desk's recorder; the elapsed time is counted by
+  Companion because the desk does not report it. **Drop marker** adds a cue point.
+- **SMART pad: Press** presses pad 1-8 of the current bank, or switches to a pinned bank
+  first. Pad names, colours and active state come from the desk.
+- **Voice FX** toggles reverb, echo, pitch, distortion, robot or disguise per effect slot.
+- **Desk** actions set screen and button brightness and the ducker depth.
+
+### Variables
+
+Strip names default to the input source (Mic 1, USB 1, Chat, ...); set _Strip names_ in the
+connection config to rename them. Levels are shown as percent and as an approximate dB value
+(0 dB at the fader's unity detent, position 90 of 127).
