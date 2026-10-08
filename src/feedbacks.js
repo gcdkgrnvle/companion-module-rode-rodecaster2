@@ -73,6 +73,21 @@ export function updateFeedbacks(self) {
 			options: [],
 			callback: () => dev.ready && dev.headphonesOff,
 		},
+		headphone_mix_muted: {
+			type: 'boolean',
+			name: 'Headphone mix is muted',
+			defaultStyle: { bgcolor: RED, color: WHITE },
+			options: [
+				{
+					id: 'headphone',
+					type: 'dropdown',
+					label: 'Headphone',
+					default: 1,
+					choices: Array.from({ length: 4 }, (_, i) => ({ id: i + 1, label: `Headphone ${i + 1}` })),
+				},
+			],
+			callback: (f) => dev.ready && dev.headphoneMixMuted(Number(f.options.headphone)),
+		},
 		panic_active: {
 			type: 'boolean',
 			name: 'Panic mute is active',

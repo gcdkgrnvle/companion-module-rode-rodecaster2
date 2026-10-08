@@ -9,7 +9,7 @@ import { UpgradeScripts } from './upgrades.js'
 
 const FEEDBACKS_BY_AREA = {
 	strips: ['strip_muted', 'strip_cued', 'strip_borrowed', 'level_control_locked', 'panic_active'],
-	monitor: ['monitor_muted', 'headphones_off', 'panic_active'],
+	monitor: ['monitor_muted', 'headphones_off', 'headphone_mix_muted', 'panic_active'],
 	recorder: ['record_state'],
 	pads: ['pad_active', 'pad_colour', 'pad_bank'],
 	fx: ['fx_on'],
@@ -30,6 +30,7 @@ export class RodecasterInstance extends InstanceBase {
 		this.config = config
 		this.applyOptions()
 		this.device.setPendingRepair(parseUnlinked(config.unlinkedSends))
+		this.device.setHeadphoneMutes(parseHeadphoneMutes(config.headphoneMixMutes))
 
 		this.device.on('log', (level, msg) => this.log(level, msg))
 		this.device.on('status', (state, message) => {
@@ -39,6 +40,7 @@ export class RodecasterInstance extends InstanceBase {
 		})
 		this.device.on('update', (area) => this.onUpdate(area))
 		this.device.on('borrowed', (list) => this.persistBorrowed(list))
+		this.device.on('headphoneMutes', (list) => this.persistHeadphoneMutes(list))
 
 		updateVariableDefinitions(this)
 		this.rebuildDefinitions()
@@ -172,6 +174,27 @@ export class RodecasterInstance extends InstanceBase {
 		} catch (err) {
 			this.log('warn', `could not persist borrowed sends: ${err.message}`)
 		}
+	}
+
+	/** @param {Array<{ headphone: number, sources: number[] }>} list */
+	persistHeadphoneMutes(list) {
+		const headphoneMixMutes = JSON.stringify(list)
+		if (headphoneMixMutes === (this.config.headphoneMixMutes ?? '[]')) return
+		this.config = { ...this.config, headphoneMixMutes }
+		try {
+			this.saveConfig(this.config)
+		} catch (err) {
+			this.log('warn', `could not persist headphone mutes: ${err.message}`)
+		}
+	}
+}
+
+/** @param {string | undefined} text */
+function parseHeadphoneMutes(text) {
+	try {
+		return JSON.parse(text ?? '[]')
+	} catch {
+		return []
 	}
 }
 

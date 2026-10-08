@@ -7,6 +7,7 @@
  *  - 'update'  (area: 'strips' | 'monitor' | 'recorder' | 'pads' | 'fx' | 'gui' | 'system' | 'all')
  *  - 'log'     (level, message)
  *  - 'borrowed' (list of currently borrowed sends, for persistence)
+ *  - 'headphoneMutes' (list of headphone sends muted here, for persistence)
  */
 import { EventEmitter } from 'node:events'
 import {
@@ -81,6 +82,9 @@ export class RodecasterDevice extends EventEmitter {
 		this.syncRequest = null
 		/** @type {Map<number, BorrowedStrip>} strip index -> borrowed sends */
 		this.borrowed = new Map()
+		/** @type {Map<number, Set<number>>} headphone (1..4) -> sources muted here */
+		this.headphoneMutes = new Map()
+		this.headphoneMuteQueue = Promise.resolve()
 		/** @type {ReturnType<RodecasterDevice['capturePanic']> | null} */
 		this.panicSnapshot = null
 		this.panicQueue = Promise.resolve()
@@ -757,6 +761,109 @@ export class RodecasterDevice extends EventEmitter {
 		return this.propBool(this.systemPath, 'disableAllHeadphoneOutputs') ?? false
 	}
 
+	/** Sends into just one headphone bus. @param {number} n 1..4 */
+	headphoneMixCells(n) {
+		if (!Number.isInteger(n) || n < 1 || n > 4 || !this.ready) return []
+		const cells = []
+		for (let source = 0; source < this.layout.sourceCount; source++) {
+			const path = this.layout.mixCellPath(source, n - 1)
+			if (!path) continue
+			cells.push({
+				source,
+				path,
+				disabled: this.propBool(path, 'mixDisabled') === true,
+				muted: this.propBool(path, 'mixMute'),
+			})
+		}
+		return cells
+	}
+
+	/** True when every enabled send into this bus is muted. @param {number} n 1..4 */
+	headphoneMixMuted(n) {
+		const cells = this.headphoneMixCells(n)
+		return cells.length > 0 && cells.every((c) => c.disabled || c.muted === true)
+	}
+
+	/** @returns {Array<{ headphone: number, sources: number[] }>} */
+	headphoneMuteList() {
+		return [...this.headphoneMutes].map(([headphone, sources]) => ({ headphone, sources: [...sources] }))
+	}
+
+	/** Restore ownership after a restart, without changing the desk. @param {Array<{ headphone: number, sources: number[] }>} list */
+	setHeadphoneMutes(list) {
+		this.headphoneMutes.clear()
+		for (const entry of Array.isArray(list) ? list : []) {
+			if (!entry || !Number.isInteger(entry.headphone) || entry.headphone < 1 || entry.headphone > 4) continue
+			if (!Array.isArray(entry.sources)) continue
+			const sources = this.headphoneMutes.get(entry.headphone) ?? new Set()
+			for (const source of entry.sources) {
+				if (Number.isInteger(source) && source >= 0) sources.add(source)
+			}
+			this.headphoneMutes.set(entry.headphone, sources)
+		}
+	}
+
+	/**
+	 * Mute one bus, preserving sends already muted by hand. Ownership is saved
+	 * before each write: a rejected write might still have reached the desk.
+	 * Panic uses strip/output mutes, so its restore never touches these cells.
+	 * @param {number} n 1..4
+	 * @param {boolean} muted
+	 */
+	async setHeadphoneMixMute(n, muted) {
+		if (!Number.isInteger(n) || n < 1 || n > 4) throw new Error('headphone must be 1..4')
+		const guard = this.connectionGuard()
+		const operation = this.headphoneMuteQueue.then(async () => {
+			try {
+				guard()
+				const cells = this.headphoneMixCells(n)
+				let sources = this.headphoneMutes.get(n)
+				if (!sources) {
+					// An empty record is meaningful: an explicit mute acquired no
+					// sends. Only an unmute with NO record gets the desk-mute fallback.
+					sources = new Set(muted ? [] : cells.filter((c) => !c.disabled && c.muted !== false).map((c) => c.source))
+					this.headphoneMutes.set(n, sources)
+					this.emit('headphoneMutes', this.headphoneMuteList())
+				}
+				if (muted) {
+					for (const cell of cells) {
+						guard()
+						// The desk may have changed a later cell while an earlier
+						// write was awaiting HID. Respect its current state.
+						if (this.propBool(cell.path, 'mixDisabled') === true || this.propBool(cell.path, 'mixMute') === true)
+							continue
+						if (!sources.has(cell.source)) {
+							sources.add(cell.source)
+							this.emit('headphoneMutes', this.headphoneMuteList())
+						}
+						// mixMute is a separate property from mixLink; do not borrow
+						// the fader or alter any other output to mute this send.
+						await this.write(cell.path, 'mixMute', V.bool(true), guard)
+					}
+				} else {
+					for (const source of [...sources]) {
+						guard()
+						const path = this.layout.mixCellPath(source, n - 1)
+						// Retain disabled or absent sends for a later restore.
+						if (!path || this.propBool(path, 'mixDisabled') === true) continue
+						// Even a locally unmuted send may have an uncertain mute write.
+						await this.write(path, 'mixMute', V.bool(false), guard)
+						sources.delete(source)
+						this.emit('headphoneMutes', this.headphoneMuteList())
+					}
+					if (sources.size === 0) {
+						this.headphoneMutes.delete(n)
+						this.emit('headphoneMutes', this.headphoneMuteList())
+					}
+				}
+			} finally {
+				this.emit('update', 'monitor')
+			}
+		})
+		this.headphoneMuteQueue = operation.catch(() => {})
+		await operation
+	}
+
 	/** @param {number} level 0..1 */
 	async setMonitorLevel(level) {
 		const target = Math.round(clamp01(level) * 100) / 100
@@ -1061,6 +1168,7 @@ export class RodecasterDevice extends EventEmitter {
 		const cell = L.mixCellFromPath(c.path)
 		if (cell) {
 			if (name === 'mixLevelWithAnchor') this.onAnchorChange(cell, c.value)
+			if (cell.mix < 4 && (name === 'mixMute' || name === 'mixDisabled')) this.emit('update', 'monitor')
 			this.emit('update', 'strips')
 			return
 		}

@@ -46,6 +46,7 @@ export function updateActions(self) {
 			self.log('warn', `${name}: ${err.message}`)
 		}
 	}
+	let headphoneMuteQueue = Promise.resolve()
 
 	self.setActionDefinitions({
 		strip_mute: {
@@ -120,6 +121,29 @@ export function updateActions(self) {
 			callback: guard('headphones off', async (e) =>
 				dev.setHeadphonesOff(resolve(String(e.options.mode), dev.headphonesOff)),
 			),
+		},
+		headphone_mix_mute: {
+			name: 'Headphones: Mute one headphone mix',
+			description: 'Mutes only the selected headphone mix. Unmute restores the sends this module muted.',
+			options: [
+				{
+					id: 'headphone',
+					type: 'dropdown',
+					label: 'Headphone',
+					default: 1,
+					choices: Array.from({ length: 4 }, (_, i) => ({ id: i + 1, label: `Headphone ${i + 1}` })),
+				},
+				modeField,
+			],
+			callback: guard('headphone mix mute', async (e) => {
+				// Resolve toggles after the preceding action has updated the desk's local state.
+				const operation = headphoneMuteQueue.then(async () => {
+					const n = Number(e.options.headphone)
+					await dev.setHeadphoneMixMute(n, resolve(String(e.options.mode), dev.headphoneMixMuted(n)))
+				})
+				headphoneMuteQueue = operation.catch(() => {})
+				await operation
+			}),
 		},
 		bluetooth_level_step: {
 			name: 'Bluetooth: Send level up / down',

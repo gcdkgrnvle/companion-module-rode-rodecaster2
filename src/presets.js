@@ -174,6 +174,19 @@ export function updatePresets(self) {
 		steps: [{ down: [{ actionId: 'headphones_off', options: { mode: 'toggle' } }], up: [] }],
 		feedbacks: [{ feedbackId: 'headphones_off', options: {}, style: { bgcolor: RED, color: WHITE } }],
 	}
+	const headphoneIds = []
+	for (let n = 1; n <= 4; n++) {
+		presets[`headphone${n}_mute`] = {
+			type: 'simple',
+			name: `Headphone ${n}: mute mix`,
+			style: style(`HP${n}\\nMUTE`),
+			steps: [{ down: [{ actionId: 'headphone_mix_mute', options: { headphone: n, mode: 'toggle' } }], up: [] }],
+			feedbacks: [
+				{ feedbackId: 'headphone_mix_muted', options: { headphone: n }, style: { bgcolor: RED, color: WHITE } },
+			],
+		}
+		headphoneIds.push(`headphone${n}_mute`)
+	}
 	presets.panic = {
 		type: 'simple',
 		name: 'Panic mute (hold)',
@@ -186,7 +199,15 @@ export function updatePresets(self) {
 	sections.push({
 		id: 'monitoring',
 		name: 'Monitoring',
-		definitions: ['monitor_dial', 'monitor_up', 'monitor_down', 'monitor_mute', 'headphones_off', 'panic'],
+		definitions: [
+			'monitor_dial',
+			'monitor_up',
+			'monitor_down',
+			'monitor_mute',
+			'headphones_off',
+			...headphoneIds,
+			'panic',
+		],
 	})
 
 	presets.record = {
