@@ -6,6 +6,7 @@ import { updateFeedbacks } from './feedbacks.js'
 import { updatePresets } from './presets.js'
 import { updateVariableDefinitions, updateVariableValues } from './variables.js'
 import { UpgradeScripts } from './upgrades.js'
+import { routingState, setMode, setCellState, setCellLevel } from './routing.js'
 
 const FEEDBACKS_BY_AREA = {
 	strips: ['strip_muted', 'strip_cued', 'strip_borrowed', 'level_control_locked', 'panic_active'],
@@ -49,6 +50,31 @@ export class RodecasterInstance extends InstanceBase {
 		this.clockTimer = setInterval(() => {
 			if (this.device.recordState === 2) this.onUpdate('recorder')
 		}, 1000)
+	}
+
+	/**
+	 * Routing API under /instance/<label>/routing (loopback Companion HTTP).
+	 * @param {import('@companion-module/base').CompanionHTTPRequest} req
+	 */
+	async handleHttpRequest(req) {
+		const json = (status, body) => ({ status, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+		try {
+			if (req.method === 'GET' && req.path === '/routing') return json(200, routingState(this.device))
+			if (req.method === 'POST' && req.path === '/routing/mode') {
+				const b = JSON.parse(req.body || '{}')
+				await setMode(this.device, Number(b.output), Number(b.mode))
+				return json(200, { ok: true })
+			}
+			if (req.method === 'POST' && req.path === '/routing/cell') {
+				const b = JSON.parse(req.body || '{}')
+				if (b.state !== undefined) await setCellState(this.device, Number(b.source), Number(b.output), String(b.state))
+				if (b.level !== undefined) await setCellLevel(this.device, Number(b.source), Number(b.output), Number(b.level))
+				return json(200, { ok: true })
+			}
+			return json(404, { error: 'not found' })
+		} catch (err) {
+			return json(400, { error: err instanceof Error ? err.message : String(err) })
+		}
 	}
 
 	async destroy() {
