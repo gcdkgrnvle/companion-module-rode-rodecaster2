@@ -60,34 +60,48 @@ function cellPath(dev, source, output) {
 /** @param {import('./device.js').RodecasterDevice} dev @param {number} output @param {number} mode */
 export async function setMode(dev, output, mode) {
 	if (![0, 1, 2].includes(mode)) throw new Error('mode must be 0, 1 or 2')
-	const p = mixMinusPath(dev, output)
-	if (!p) throw new Error(`no MIXMINUSES node for output ${output}`)
-	await dev.write(p, 'outputMixMinus', V.int(mode))
-	dev.emit('update', 'monitor')
+	await dev.queueOperation(async (guard) => {
+		guard()
+		const p = mixMinusPath(dev, output)
+		if (!p) throw new Error(`no MIXMINUSES node for output ${output}`)
+		await dev.write(p, 'outputMixMinus', V.int(mode), guard)
+		guard()
+		dev.emit('update', 'monitor')
+	})
 }
 
 /** @param {import('./device.js').RodecasterDevice} dev @param {number} source @param {number} output @param {'link'|'unlink'|'off'} state */
 export async function setCellState(dev, source, output, state) {
-	const p = cellPath(dev, source, output)
-	if (state === 'off') {
-		await dev.write(p, 'mixDisabled', V.bool(true))
-		await dev.write(p, 'mixMute', V.bool(true))
-	} else if (state === 'link') {
-		await dev.write(p, 'mixDisabled', V.bool(false))
-		await dev.write(p, 'mixMute', V.bool(false))
-		await dev.write(p, 'mixLinkRequest', pressValue())
-		dev.tree.getByPath(p)?.properties.set('mixLink', V.bool(true))
-	} else if (state === 'unlink') {
-		await dev.write(p, 'mixUnlinkRequest', pressValue())
-		dev.tree.getByPath(p)?.properties.set('mixLink', V.bool(false))
-	} else throw new Error('state must be link, unlink or off')
-	dev.emit('update', 'strips')
+	await dev.queueOperation(async (guard) => {
+		guard()
+		const p = cellPath(dev, source, output)
+		if (state === 'off') {
+			await dev.write(p, 'mixDisabled', V.bool(true), guard)
+			await dev.write(p, 'mixMute', V.bool(true), guard)
+		} else if (state === 'link') {
+			await dev.write(p, 'mixDisabled', V.bool(false), guard)
+			await dev.write(p, 'mixMute', V.bool(false), guard)
+			await dev.write(p, 'mixLinkRequest', pressValue(), guard)
+			guard()
+			dev.tree.getByPath(p)?.properties.set('mixLink', V.bool(true))
+		} else if (state === 'unlink') {
+			await dev.write(p, 'mixUnlinkRequest', pressValue(), guard)
+			guard()
+			dev.tree.getByPath(p)?.properties.set('mixLink', V.bool(false))
+		} else throw new Error('state must be link, unlink or off')
+		guard()
+		dev.emit('update', 'strips')
+	})
 }
 
 /** @param {import('./device.js').RodecasterDevice} dev @param {number} source @param {number} output @param {number} level 0..1 */
 export async function setCellLevel(dev, source, output, level) {
-	const p = cellPath(dev, source, output)
-	const cur = parseMixLevel(dev.propString(p, 'mixLevelWithAnchor')) ?? { level: 0, anchor: 0 }
-	await dev.write(p, 'mixLevelWithAnchor', V.string(formatMixLevel(clamp01(level), cur.anchor)))
-	dev.emit('update', 'strips')
+	await dev.queueOperation(async (guard) => {
+		guard()
+		const p = cellPath(dev, source, output)
+		const cur = parseMixLevel(dev.propString(p, 'mixLevelWithAnchor')) ?? { level: 0, anchor: 0 }
+		await dev.write(p, 'mixLevelWithAnchor', V.string(formatMixLevel(clamp01(level), cur.anchor)), guard)
+		guard()
+		dev.emit('update', 'strips')
+	})
 }
