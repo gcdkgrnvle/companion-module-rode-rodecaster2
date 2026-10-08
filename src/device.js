@@ -56,11 +56,13 @@ const CHANNEL_SOURCE_UNASSIGNED = -1
 export class RodecasterDevice extends EventEmitter {
 	/**
 	 * @param {{ serial?: string, stripNames?: string[], levelControl?: boolean, monitorMethod?: 'property' | 'encoder' }} options
+	 * @param {{ transport?: HidTransport, timers?: { setTimeout: typeof setTimeout, clearTimeout: typeof clearTimeout } }} dependencies
 	 */
-	constructor(options = {}) {
+	constructor(options = {}, { transport = new HidTransport(), timers = { setTimeout, clearTimeout } } = {}) {
 		super()
 		this.options = { serial: '', stripNames: [], levelControl: false, monitorMethod: 'property', ...options }
-		this.transport = new HidTransport()
+		this.transport = transport
+		this.timers = timers
 		this.session = new ProtocolSession()
 		this.reasm = new Reassembler()
 		this.clock = new RecordClock()
@@ -70,6 +72,12 @@ export class RodecasterDevice extends EventEmitter {
 		this.reconnectTimer = null
 		/** @type {NodeJS.Timeout | null} */
 		this.readyTimer = null
+		this.handshakePause = null
+		this.connectionListeners = null
+		this.connecting = false
+		this.closing = null
+		this.stopping = null
+		this.syncRequest = null
 		/** @type {Map<number, BorrowedStrip>} strip index -> borrowed sends */
 		this.borrowed = new Map()
 		/** @type {ReturnType<RodecasterDevice['capturePanic']> | null} */
@@ -83,8 +91,6 @@ export class RodecasterDevice extends EventEmitter {
 		this.session.on('ready', () => this.onReady())
 		this.session.on('change', (c) => this.onChange(c))
 		this.session.on('needsFullSync', () => this.resync())
-		this.transport.on('report', (buf) => this.onReport(buf))
-		this.transport.on('close', (err) => this.onClosed(err))
 	}
 
 	// ---------------------------------------------------------------- lifecycle
@@ -101,85 +107,171 @@ export class RodecasterDevice extends EventEmitter {
 		void this.connect()
 	}
 
-	async stop() {
-		this.connectionGeneration++
+	stop() {
 		this.running = false
+		if (this.stopping) return this.stopping
+		this.connectionGeneration++
 		this.clearTimers()
-		if (this.borrowed.size > 0) await this.restoreFaders().catch(() => {})
-		await this.transport.close()
-		this.ready = false
-		this.session.reset()
+		this.detachTransportListeners()
+		this.connecting = false
+		this.syncRequest = null
+		this.stopping = (async () => {
+			if (this.borrowed.size > 0 && this.ready) await this.restoreFaders().catch(() => {})
+			await this.transport.close()
+			this.ready = false
+			this.session.reset()
+		})().finally(() => {
+			this.stopping = null
+			if (this.running) void this.connect()
+		})
+		return this.stopping
 	}
 
 	clearTimers() {
-		if (this.reconnectTimer) clearTimeout(this.reconnectTimer)
-		if (this.readyTimer) clearTimeout(this.readyTimer)
+		if (this.reconnectTimer !== null) this.timers.clearTimeout(this.reconnectTimer)
+		if (this.readyTimer !== null) this.timers.clearTimeout(this.readyTimer)
 		this.reconnectTimer = null
 		this.readyTimer = null
-	}
-
-	async connect() {
-		if (!this.running || this.transport.isOpen) return
-		this.connectionGeneration++
-		this.emit('status', 'connecting')
-		try {
-			const info = await this.transport.open(this.options.serial || undefined)
-			this.log('info', `opened ${info.product} ${info.serialNumber} (pid 0x${info.productId.toString(16)})`)
-			this.reasm = new Reassembler()
-			this.session.reset()
-			await this.handshake()
-			this.readyTimer = setTimeout(() => {
-				if (!this.ready) {
-					this.log('warn', 'no full sync within 8 s, reopening')
-					void this.transport.close().then(() => this.onClosed())
-				}
-			}, READY_TIMEOUT_MS)
-		} catch (err) {
-			this.emit('status', 'disconnected', err.message)
-			this.scheduleReconnect()
+		if (this.handshakePause) {
+			const pause = this.handshakePause
+			this.handshakePause = null
+			this.timers.clearTimeout(pause.timer)
+			pause.resolve()
 		}
 	}
 
-	async handshake() {
+	isCurrentConnection(generation) {
+		return this.running && generation === this.connectionGeneration
+	}
+
+	detachTransportListeners() {
+		if (!this.connectionListeners) return
+		const { transport, report, close } = this.connectionListeners
+		transport.off('report', report)
+		transport.off('close', close)
+		this.connectionListeners = null
+	}
+
+	armReadyTimeout(generation) {
+		// Repeated structural changes must not keep extending recovery forever.
+		if (this.readyTimer !== null) return
+		const timer = this.timers.setTimeout(() => {
+			if (this.readyTimer !== timer || !this.isCurrentConnection(generation)) return
+			this.readyTimer = null
+			this.log('warn', 'no full sync within 8 s, reopening')
+			void this.onClosed(new Error('no full sync within 8 s'), generation)
+		}, READY_TIMEOUT_MS)
+		this.readyTimer = timer
+	}
+
+	async connect() {
+		if (!this.running || this.transport.isOpen || this.connecting || this.closing || this.stopping) return
+		const generation = ++this.connectionGeneration
+		this.connecting = true
+		this.clearTimers()
+		this.ready = false
+		this.reasm = new Reassembler()
+		this.session.reset()
+		const report = (buf) => {
+			if (this.isCurrentConnection(generation)) this.onReport(buf)
+		}
+		const close = (err) => void this.onClosed(err, generation)
+		this.connectionListeners = { transport: this.transport, report, close }
+		this.transport.on('report', report)
+		this.transport.on('close', close)
+		// Arm before any await: even a write that never settles needs recovery,
+		// and a full sync delivered during the handshake must clear this timer.
+		this.armReadyTimeout(generation)
+		this.emit('status', 'connecting')
+		try {
+			if (!this.isCurrentConnection(generation)) return
+			const info = await this.transport.open(this.options.serial || undefined)
+			if (!this.isCurrentConnection(generation)) return
+			this.log('info', `opened ${info.product} ${info.serialNumber} (pid 0x${info.productId.toString(16)})`)
+			await this.handshake(generation)
+		} catch (err) {
+			await this.onClosed(err, generation)
+		} finally {
+			if (generation === this.connectionGeneration) this.connecting = false
+		}
+	}
+
+	async handshake(generation) {
+		if (!this.isCurrentConnection(generation)) return
 		await this.transport.write(modeNormalReport())
-		await new Promise((r) => setTimeout(r, HANDSHAKE_PAUSE_MS))
+		if (!this.isCurrentConnection(generation)) return
+		await new Promise((resolve) => {
+			const pause = { resolve, timer: null }
+			this.handshakePause = pause
+			pause.timer = this.timers.setTimeout(() => {
+				if (this.handshakePause !== pause) return
+				this.handshakePause = null
+				resolve()
+			}, HANDSHAKE_PAUSE_MS)
+		})
+		if (!this.isCurrentConnection(generation)) return
 		await this.transport.write(sessionOpenReport())
 	}
 
 	async resync() {
+		const generation = this.connectionGeneration
+		if (!this.isCurrentConnection(generation) || !this.transport.isOpen) return
 		this.ready = false
+		if (this.syncRequest) return
+		const request = (this.syncRequest = {})
 		this.borrowedBeforeResync = new Map(this.borrowed)
+		this.armReadyTimeout(generation)
 		this.log('debug', 'layout changed, requesting a new full sync')
 		try {
 			await this.transport.write(sessionOpenReport())
 		} catch (err) {
+			if (!this.isCurrentConnection(generation) || this.syncRequest !== request) return
 			this.log('warn', `resync failed: ${err.message}`)
+			await this.onClosed(err, generation)
 		}
 	}
 
 	scheduleReconnect() {
-		if (!this.running || this.reconnectTimer) return
-		this.reconnectTimer = setTimeout(() => {
+		if (!this.running || this.reconnectTimer !== null) return
+		const generation = this.connectionGeneration
+		const timer = this.timers.setTimeout(() => {
+			if (this.reconnectTimer !== timer || !this.isCurrentConnection(generation)) return
 			this.reconnectTimer = null
 			void this.connect()
 		}, RECONNECT_MS)
+		this.reconnectTimer = timer
 	}
 
 	/** @param {Error} [err] */
-	onClosed(err) {
-		this.connectionGeneration++
+	onClosed(err, generation = this.connectionGeneration) {
+		if (generation !== this.connectionGeneration || this.closing) return this.closing
+		if (!this.connecting && !this.connectionListeners && !this.transport.isOpen) return
+		const disconnectedGeneration = ++this.connectionGeneration
 		const wasReady = this.ready
 		this.ready = false
+		this.connecting = false
+		this.syncRequest = null
 		this.clearTimers()
+		this.detachTransportListeners()
 		this.session.reset()
+		// Detach the handle before scheduling a retry, including write failures
+		// that produce no separate HID error event.
+		const closing = this.transport.close().finally(() => {
+			if (this.closing === closing) this.closing = null
+			if (this.isCurrentConnection(disconnectedGeneration)) this.scheduleReconnect()
+		})
+		this.closing = closing
 		if (wasReady || err) this.emit('status', 'disconnected', err?.message ?? 'desk disconnected')
 		this.emit('update', 'all')
-		this.scheduleReconnect()
+		return closing
 	}
 
 	/** @param {Buffer} buf */
 	onReport(buf) {
+		if (!this.transport.isOpen) return
+		const generation = this.connectionGeneration
 		for (const body of this.reasm.push(buf)) {
+			if (generation !== this.connectionGeneration) return
 			try {
 				this.session.ingest(body)
 			} catch (err) {
@@ -189,8 +281,10 @@ export class RodecasterDevice extends EventEmitter {
 	}
 
 	onReady() {
-		if (this.readyTimer) clearTimeout(this.readyTimer)
+		if (!this.transport.isOpen || !this.session.isReady) return
+		if (this.readyTimer !== null) this.timers.clearTimeout(this.readyTimer)
 		this.readyTimer = null
+		this.syncRequest = null
 		this.ready = true
 		const caps = this.session.capabilities
 		this.log('info', `ready: ${caps.model} firmware ${caps.firmware}, ${caps.faders.length} strips`)
@@ -254,6 +348,28 @@ export class RodecasterDevice extends EventEmitter {
 		return v === undefined ? undefined : asString(v)
 	}
 
+	/** Keep an in-flight operation on its original connection and address space. */
+	connectionGuard() {
+		const generation = this.connectionGeneration
+		const transport = this.transport
+		const device = transport.device
+		const tree = this.tree
+		const layout = this.layout
+		return () => {
+			if (
+				!this.ready ||
+				!transport.isOpen ||
+				this.connectionGeneration !== generation ||
+				this.transport !== transport ||
+				transport.device !== device ||
+				this.tree !== tree ||
+				this.layout !== layout
+			) {
+				throw new Error('desk connection or layout changed')
+			}
+		}
+	}
+
 	/**
 	 * Write one property. The desk never echoes our own writes, so the local
 	 * tree is updated here; side-effect pushes still arrive normally.
@@ -267,14 +383,18 @@ export class RodecasterDevice extends EventEmitter {
 	async write(path, name, value, guard) {
 		guard?.()
 		if (!this.ready || !this.tree || !path) throw new Error('desk not connected')
+		const connectionGuard = this.connectionGuard()
+		connectionGuard()
 		const node = this.tree.getByPath(path)
 		if (!node) throw new Error(`no node at ${path.join('/')}`)
 		if (!node.properties.has(name)) throw new Error(`${node.type} has no property ${name}; refusing to create it`)
 		const body = encodePropertyChanged(path, name, value)
 		for (const report of encodeReports(body, REPORT_ID_OUT)) {
 			guard?.()
+			connectionGuard()
 			await this.transport.write(report)
 			guard?.()
+			connectionGuard()
 		}
 		node.properties.set(name, value)
 	}
@@ -415,6 +535,8 @@ export class RodecasterDevice extends EventEmitter {
 	 * @param {number} i
 	 */
 	async borrowStrip(i) {
+		const guard = this.connectionGuard()
+		guard()
 		if (!this.levelControlEnabled) throw new Error('level control is locked (enable it in the connection settings)')
 		if (this.borrowed.has(i)) return this.borrowed.get(i)
 		const source = this.stripSourceOrdinal(i)
@@ -425,7 +547,9 @@ export class RodecasterDevice extends EventEmitter {
 		this.borrowed.set(i, entry)
 		this.emit('borrowed', this.borrowedList())
 		for (const c of cells) {
+			guard()
 			await this.write(c.path, 'mixUnlinkRequest', pressValue())
+			guard()
 			this.tree.getByPath(c.path)?.properties.set('mixLink', V.bool(false))
 		}
 		this.emit('update', 'strips')
@@ -438,9 +562,12 @@ export class RodecasterDevice extends EventEmitter {
 	 * @param {number} level
 	 */
 	async setStripLevel(i, level) {
+		const guard = this.connectionGuard()
 		const entry = await this.borrowStrip(i)
+		guard()
 		const target = clamp01(level)
 		for (const c of this.stripCells(i)) {
+			guard()
 			if (!entry.mixes.includes(c.mix)) continue
 			await this.write(c.path, 'mixLevelWithAnchor', V.string(formatMixLevel(target, c.anchor)))
 		}
@@ -460,7 +587,9 @@ export class RodecasterDevice extends EventEmitter {
 	async releaseStrip(i) {
 		const entry = this.borrowed.get(i)
 		if (!entry) return
+		const guard = this.connectionGuard()
 		await this.relinkSends(entry.source, entry.mixes)
+		guard()
 		this.borrowed.delete(i)
 		this.emit('borrowed', this.borrowedList())
 		this.emit('update', 'strips')
@@ -468,11 +597,14 @@ export class RodecasterDevice extends EventEmitter {
 
 	/** @param {number} source @param {number[]} mixes */
 	async relinkSends(source, mixes) {
+		const guard = this.connectionGuard()
 		for (const mix of mixes) {
+			guard()
 			const path = this.layout.mixCellPath(source, mix)
 			if (!path) continue
 			if (this.propBool(path, 'mixLink') === true) continue
 			await this.write(path, 'mixLinkRequest', pressValue())
+			guard()
 			this.tree.getByPath(path)?.properties.set('mixLink', V.bool(true))
 		}
 	}
@@ -500,12 +632,14 @@ export class RodecasterDevice extends EventEmitter {
 		// Keep entries journaled while writes are in flight or fail. Successful
 		// sends are skipped by relinkSends when a partial repair is retried.
 		const pending = [...this.pendingRepair]
+		const guard = this.connectionGuard()
 		// After a resync (layout change) the borrowed map survives; re-apply nothing.
 		if (this.borrowedBeforeResync) {
 			this.borrowedBeforeResync = null
 		}
 		for (const entry of pending) {
 			try {
+				guard()
 				// A send repaired on an earlier attempt may have been borrowed again.
 				// Defer that entry until it can be repaired without taking active control.
 				if (
@@ -518,6 +652,7 @@ export class RodecasterDevice extends EventEmitter {
 					throw new Error('send is absent from the current layout')
 				}
 				await this.relinkSends(entry.source, entry.mixes)
+				guard()
 				this.pendingRepair = this.pendingRepair.filter((e) => e !== entry)
 				this.log('info', `relinked sends of source ${entry.source} left borrowed by a previous run`)
 			} catch (err) {
