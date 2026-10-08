@@ -61,12 +61,12 @@ export class RodecasterInstance extends InstanceBase {
 		try {
 			if (req.method === 'GET' && req.path === '/routing') return json(200, routingState(this.device))
 			if (req.method === 'POST' && req.path === '/routing/mode') {
-				const b = JSON.parse(req.body || '{}')
+				const b = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body ?? {})
 				await setMode(this.device, Number(b.output), Number(b.mode))
 				return json(200, { ok: true })
 			}
 			if (req.method === 'POST' && req.path === '/routing/cell') {
-				const b = JSON.parse(req.body || '{}')
+				const b = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body ?? {})
 				if (b.state !== undefined) await setCellState(this.device, Number(b.source), Number(b.output), String(b.state))
 				if (b.level !== undefined) await setCellLevel(this.device, Number(b.source), Number(b.output), Number(b.level))
 				return json(200, { ok: true })
