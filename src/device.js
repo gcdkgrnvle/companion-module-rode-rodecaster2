@@ -72,8 +72,10 @@ export class RodecasterDevice extends EventEmitter {
 		this.readyTimer = null
 		/** @type {Map<number, BorrowedStrip>} strip index -> borrowed sends */
 		this.borrowed = new Map()
-		/** @type {{ strips: boolean[], monMute: boolean, phonesOff: boolean, btMute: boolean } | null} */
+		/** @type {ReturnType<RodecasterDevice['capturePanic']> | null} */
 		this.panicSnapshot = null
+		this.panicQueue = Promise.resolve()
+		this.connectionGeneration = 0
 		/** @type {Array<{ source: number, mixes: number[] }>} sends to relink on the next ready */
 		this.pendingRepair = []
 		this.encoderPhase = false
@@ -100,6 +102,7 @@ export class RodecasterDevice extends EventEmitter {
 	}
 
 	async stop() {
+		this.connectionGeneration++
 		this.running = false
 		this.clearTimers()
 		if (this.borrowed.size > 0) await this.restoreFaders().catch(() => {})
@@ -117,6 +120,7 @@ export class RodecasterDevice extends EventEmitter {
 
 	async connect() {
 		if (!this.running || this.transport.isOpen) return
+		this.connectionGeneration++
 		this.emit('status', 'connecting')
 		try {
 			const info = await this.transport.open(this.options.serial || undefined)
@@ -163,6 +167,7 @@ export class RodecasterDevice extends EventEmitter {
 
 	/** @param {Error} [err] */
 	onClosed(err) {
+		this.connectionGeneration++
 		const wasReady = this.ready
 		this.ready = false
 		this.clearTimers()
@@ -257,14 +262,20 @@ export class RodecasterDevice extends EventEmitter {
 	 * @param {number[] | null} path
 	 * @param {string} name
 	 * @param {import('./protocol/juce-var.js').Value} value
+	 * @param {() => void} [guard] Optional identity check for panic recovery.
 	 */
-	async write(path, name, value) {
+	async write(path, name, value, guard) {
+		guard?.()
 		if (!this.ready || !this.tree || !path) throw new Error('desk not connected')
 		const node = this.tree.getByPath(path)
 		if (!node) throw new Error(`no node at ${path.join('/')}`)
 		if (!node.properties.has(name)) throw new Error(`${node.type} has no property ${name}; refusing to create it`)
 		const body = encodePropertyChanged(path, name, value)
-		for (const report of encodeReports(body, REPORT_ID_OUT)) await this.transport.write(report)
+		for (const report of encodeReports(body, REPORT_ID_OUT)) {
+			guard?.()
+			await this.transport.write(report)
+			guard?.()
+		}
 		node.properties.set(name, value)
 	}
 
@@ -617,34 +628,99 @@ export class RodecasterDevice extends EventEmitter {
 	 * what was already muted so release restores exactly that.
 	 */
 	async panic() {
-		if (this.panicSnapshot) return
-		const strips = this.strips()
-		this.panicSnapshot = {
-			strips: strips.map((s) => s.muted),
-			monMute: this.monitorMuted,
-			phonesOff: this.headphonesOff,
-			btMute: this.propBool(this.outputPath, 'outputBTMute') ?? false,
-		}
-		for (const s of strips)
-			if (s.source && !s.muted) await this.write(this.channelPath(s.index), 'channelOutputMute', V.bool(true))
-		if (!this.panicSnapshot.monMute) await this.write(this.outputPath, 'outputMonMute', V.bool(true))
-		if (!this.panicSnapshot.btMute) await this.write(this.outputPath, 'outputBTMute', V.bool(true))
-		if (!this.panicSnapshot.phonesOff) await this.write(this.systemPath, 'disableAllHeadphoneOutputs', V.bool(true))
-		this.emit('update', 'all')
+		await this.queuePanic(true)
 	}
 
 	async releasePanic() {
-		const snap = this.panicSnapshot
-		if (!snap) return
-		this.panicSnapshot = null
-		for (let i = 0; i < snap.strips.length && i < this.stripCount; i++) {
-			if (!snap.strips[i] && this.stripSource(i))
-				await this.write(this.channelPath(i), 'channelOutputMute', V.bool(false))
+		await this.queuePanic(false)
+	}
+
+	/** Capture once, before any mute writes. A missing property is not an unmuted output. */
+	capturePanic() {
+		if (!this.ready || !this.transport.isOpen || !this.transport.device || !this.tree || !this.layout)
+			throw new Error('panic: desk not connected; cannot capture original state')
+		/** @type {Array<{ path: number[], name: string, node: import('./protocol/valuetree.js').ValueTree, muted: boolean | null }>} */
+		const targets = []
+		const capture = (path, name, included = true) => {
+			const value = this.propBool(path, name)
+			if (included && value === undefined) throw new Error(`panic: original ${name} is unknown`)
+			if (included && !value) {
+				targets.push({ path: [...path], name, node: this.tree.getByPath(path), muted: false })
+			}
+			return value ?? false
 		}
-		if (!snap.monMute) await this.write(this.outputPath, 'outputMonMute', V.bool(false))
-		if (!snap.btMute) await this.write(this.outputPath, 'outputBTMute', V.bool(false))
-		if (!snap.phonesOff) await this.write(this.systemPath, 'disableAllHeadphoneOutputs', V.bool(false))
-		this.emit('update', 'all')
+		const strips = this.strips()
+		return {
+			strips: strips.map((s) => capture(this.channelPath(s.index), 'channelOutputMute', !!s.source)),
+			monMute: capture(this.outputPath, 'outputMonMute'),
+			btMute: capture(this.outputPath, 'outputBTMute'),
+			phonesOff: capture(this.systemPath, 'disableAllHeadphoneOutputs'),
+			targets,
+			sources: strips.map((s) => s.sourceOrdinal),
+			transport: this.transport,
+			device: this.transport.device,
+			info: this.transport.info,
+			identity: { ...this.transport.info },
+			generation: this.connectionGeneration,
+			session: this.session,
+			tree: this.tree,
+			layout: this.layout,
+		}
+	}
+
+	/** Never apply a retained snapshot to a replacement connection or an uncertain layout. */
+	checkPanicIdentity(snap) {
+		if (
+			!this.ready ||
+			!this.transport.isOpen ||
+			this.transport !== snap.transport ||
+			this.transport.device !== snap.device ||
+			this.transport.info !== snap.info ||
+			['path', 'serialNumber', 'productId'].some((key) => this.transport.info?.[key] !== snap.identity[key]) ||
+			this.connectionGeneration !== snap.generation ||
+			this.session !== snap.session ||
+			this.tree !== snap.tree ||
+			this.layout !== snap.layout ||
+			this.stripCount !== snap.strips.length ||
+			snap.sources.some((source, i) => this.stripSourceOrdinal(i) !== source) ||
+			snap.targets.some((target) => this.tree.getByPath(target.path) !== target.node)
+		) {
+			throw new Error('panic recovery pending: original connection or layout is unavailable or changed')
+		}
+	}
+
+	/** @param {boolean} muted */
+	queuePanic(muted) {
+		// The caller keeps its rejection; only the queue tail swallows it so a
+		// later request can retry or reverse direction after a partial failure.
+		const operation = this.panicQueue.then(async () => {
+			try {
+				if (!this.panicSnapshot) {
+					if (!muted) return
+					this.panicSnapshot = this.capturePanic()
+					this.emit('update', 'all')
+				}
+				const snap = this.panicSnapshot
+				const guard = () => this.checkPanicIdentity(snap)
+				guard()
+				for (const target of snap.targets) {
+					if (target.muted === muted) continue
+					guard()
+					// A rejected write may still have reached the desk. Keep it
+					// uncertain until an idempotent mute or restore is acknowledged.
+					target.muted = null
+					await this.write(target.path, target.name, V.bool(muted), guard)
+					guard()
+					target.muted = muted
+				}
+				if (!muted) this.panicSnapshot = null
+			} finally {
+				// Failures must also refresh panicActive feedback and partial state.
+				this.emit('update', 'all')
+			}
+		})
+		this.panicQueue = operation.catch(() => {})
+		return operation
 	}
 
 	// ---------------------------------------------------------------- recorder
