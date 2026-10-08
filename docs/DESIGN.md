@@ -71,8 +71,8 @@ Captured on Tony's Pro II, firmware 1.7.3, on 2026-10-08. These observations pre
 routing-page implementation; no hardware was accessed while building it.
 
 - `MIXMINUSES[o].outputMixMinus` is Int32: `0` Main Mix, `1` Mix-minus, `2` Custom. CallMe
-  outputs 10-12 have no mode node (`null`). Reads are proven; host mode writes are **not yet
-  hardware-tested**.
+  outputs 10-12 have no mode node (`null`). Reads and host writes are hardware-verified (USB 1, output 7: the desk's tab followed each
+  write, and Main → Mix-minus → Custom kept custom cell states and levels).
 - Each source/output button cycles linked → unlinked → off (red X) → linked. The host
   sequences in `src/routing.js` `setCellState` are hardware-verified and update the desk's
   screen. Their property order is preserved. Linking again snaps level to the anchor; the

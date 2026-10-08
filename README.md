@@ -44,7 +44,7 @@ the connection settings. Each saved setup also appears as a button under Compani
 
 Cell-state writes are verified on a Pro II running firmware 1.7.3, and the desk screen follows
 them. Host level writes are verified on unlinked sends; the desk itself also adjusts linked
-send offsets. **Changing output modes from the computer remains untested on hardware.**
+send offsets. Output mode writes are verified on USB 1 (the desk's tab follows, and custom cell states and levels are kept).
 See [Routing page help](companion/HELP.md#routing-page) for details.
 
 ## Install for development
