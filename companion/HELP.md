@@ -74,6 +74,10 @@ must stay on `127.0.0.1:8000` because it has no authentication. The routing page
 that local server and is not exposed by this API. Limit API access to the trusted home LAN;
 HTTP does not encrypt the key.
 
+Add `?return=state` to any successful call to get the whole desk state back instead of just the
+changed resource (the same body as `GET /api/v1/state`). A Companion setup can store that answer in
+one custom variable and colour every button from it with `jsonpath()` expressions.
+
 Tony's desktop uses ufw. If needed, Tony can allow this port only from the home subnet with
 the following command. The module does not change firewall settings:
 

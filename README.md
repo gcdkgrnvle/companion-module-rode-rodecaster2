@@ -61,6 +61,10 @@ Restrict access to the trusted LAN: HTTP does not encrypt the key. On Tony's des
 the API port from `192.168.1.0/24` in ufw if that rule is not already present. This is a manual
 firewall step, not something the module changes:
 
+Add `?return=state` to any successful call to get the whole desk state back instead of just the
+changed resource (the same body as `GET /api/v1/state`). A Companion setup can store that answer in
+one custom variable and colour every button from it with `jsonpath()` expressions.
+
 ```bash
 sudo ufw allow from 192.168.1.0/24 to any port 8765 proto tcp
 ```
