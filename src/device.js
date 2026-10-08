@@ -50,7 +50,8 @@ const CHANNEL_SOURCE_UNASSIGNED = -1
  */
 
 /**
- * @typedef {{ source: number, mixes: number[], anchor: number }} BorrowedStrip
+ * @typedef {{ source: number, mixes: number[], identity?: import('./hid-transport.js').DeviceIdentity | null }} RecoveryEntry
+ * @typedef {RecoveryEntry & { anchor: number }} BorrowedStrip
  */
 
 export class RodecasterDevice extends EventEmitter {
@@ -84,7 +85,7 @@ export class RodecasterDevice extends EventEmitter {
 		this.panicSnapshot = null
 		this.panicQueue = Promise.resolve()
 		this.connectionGeneration = 0
-		/** @type {Array<{ source: number, mixes: number[] }>} sends to relink on the next ready */
+		/** @type {RecoveryEntry[]} sends to relink when their original desk is ready */
 		this.pendingRepair = []
 		this.encoderPhase = false
 
@@ -187,7 +188,10 @@ export class RodecasterDevice extends EventEmitter {
 			if (!this.isCurrentConnection(generation)) return
 			const info = await this.transport.open(this.options.serial || undefined)
 			if (!this.isCurrentConnection(generation)) return
-			this.log('info', `opened ${info.product} ${info.serialNumber} (pid 0x${info.productId.toString(16)})`)
+			this.log(
+				'info',
+				`opened ${info.product} ${info.serialNumber} (pid 0x${info.productId?.toString(16) ?? 'unknown'})`,
+			)
 			await this.handshake(generation)
 		} catch (err) {
 			await this.onClosed(err, generation)
@@ -538,12 +542,27 @@ export class RodecasterDevice extends EventEmitter {
 		const guard = this.connectionGuard()
 		guard()
 		if (!this.levelControlEnabled) throw new Error('level control is locked (enable it in the connection settings)')
-		if (this.borrowed.has(i)) return this.borrowed.get(i)
+		if (this.borrowed.has(i)) {
+			const entry = this.borrowed.get(i)
+			this.checkRecoveryIdentity(entry.identity)
+			return entry
+		}
 		const source = this.stripSourceOrdinal(i)
 		if (source < 0) throw new Error(`strip ${i + 1} has no input source`)
 		const cells = this.stripCells(i).filter((c) => c.link && !c.disabled)
 		if (cells.length === 0) throw new Error(`strip ${i + 1} has no linked sends to borrow`)
-		const entry = { source, mixes: cells.map((c) => c.mix), anchor: cells[0].anchor }
+		const entry = {
+			source,
+			mixes: cells.map((c) => c.mix),
+			anchor: cells[0].anchor,
+			identity: this.transport.identity,
+		}
+		if (!knownIdentity(entry.identity)) {
+			this.log(
+				'warn',
+				'borrowed sends have unknown desk identity; automatic recovery is blocked, manual review required',
+			)
+		}
 		this.borrowed.set(i, entry)
 		this.emit('borrowed', this.borrowedList())
 		for (const c of cells) {
@@ -588,22 +607,28 @@ export class RodecasterDevice extends EventEmitter {
 		const entry = this.borrowed.get(i)
 		if (!entry) return
 		const guard = this.connectionGuard()
-		await this.relinkSends(entry.source, entry.mixes)
+		await this.relinkSends(entry.source, entry.mixes, entry.identity)
 		guard()
+		this.checkRecoveryIdentity(entry.identity)
 		this.borrowed.delete(i)
 		this.emit('borrowed', this.borrowedList())
 		this.emit('update', 'strips')
 	}
 
-	/** @param {number} source @param {number[]} mixes */
-	async relinkSends(source, mixes) {
-		const guard = this.connectionGuard()
+	/** @param {number} source @param {number[]} mixes @param {RecoveryEntry['identity']} identity */
+	async relinkSends(source, mixes, identity) {
+		const connectionGuard = this.connectionGuard()
+		const guard = () => {
+			connectionGuard()
+			this.checkRecoveryIdentity(identity)
+		}
+		guard()
 		for (const mix of mixes) {
 			guard()
 			const path = this.layout.mixCellPath(source, mix)
 			if (!path) continue
 			if (this.propBool(path, 'mixLink') === true) continue
-			await this.write(path, 'mixLinkRequest', pressValue())
+			await this.write(path, 'mixLinkRequest', pressValue(), guard)
 			guard()
 			this.tree.getByPath(path)?.properties.set('mixLink', V.bool(true))
 		}
@@ -614,21 +639,51 @@ export class RodecasterDevice extends EventEmitter {
 		for (const i of [...this.borrowed.keys()]) await this.releaseStrip(i)
 	}
 
-	/** @returns {Array<{ strip: number, source: number, mixes: number[] }>} */
+	/** @returns {Array<RecoveryEntry & { strip: number }>} */
 	borrowedList() {
-		return [...this.borrowed.entries()].map(([strip, e]) => ({ strip, source: e.source, mixes: e.mixes }))
+		return [...this.borrowed.entries()].map(([strip, e]) => ({
+			strip,
+			source: e.source,
+			mixes: e.mixes,
+			identity: e.identity,
+		}))
+	}
+
+	/** Unknown and legacy identities never authorize a recovery write. */
+	checkRecoveryIdentity(identity) {
+		if (!knownIdentity(identity)) {
+			throw new Error('recovery retained: unknown or legacy desk identity; manual review required')
+		}
+		const current = this.transport.identity
+		if (!knownIdentity(current)) {
+			throw new Error(
+				'recovery retained: attached desk identity is unknown; reconnect the original desk with a known serial',
+			)
+		}
+		if (!sameIdentity(identity, current)) {
+			throw new Error('recovery retained for another desk; reconnect the original desk to repair its sends')
+		}
 	}
 
 	/**
 	 * Sends recorded as borrowed by a previous run (persisted by the instance):
-	 * relinked on the next ready so a crash never leaves a fader disconnected.
-	 * @param {Array<{ source: number, mixes: number[] }>} list
+	 * relinked only when the original desk can be identified on the next ready.
+	 * @param {RecoveryEntry[]} list
 	 */
 	setPendingRepair(list) {
 		this.pendingRepair = Array.isArray(list) ? list : []
 	}
 
 	async repairOnStart() {
+		// Active borrowing belongs to its original desk too. A replacement must
+		// not inherit it, but the records must survive until that desk returns.
+		const borrowedCount = this.borrowed.size
+		for (const [strip, entry] of this.borrowed) {
+			if (sameIdentity(entry.identity, this.transport.identity)) continue
+			this.pendingRepair.push({ source: entry.source, mixes: entry.mixes, identity: entry.identity })
+			this.borrowed.delete(strip)
+		}
+		if (this.borrowed.size !== borrowedCount) this.emit('update', 'strips')
 		// Keep entries journaled while writes are in flight or fail. Successful
 		// sends are skipped by relinkSends when a partial repair is retried.
 		const pending = [...this.pendingRepair]
@@ -640,6 +695,7 @@ export class RodecasterDevice extends EventEmitter {
 		for (const entry of pending) {
 			try {
 				guard()
+				this.checkRecoveryIdentity(entry.identity)
 				// A send repaired on an earlier attempt may have been borrowed again.
 				// Defer that entry until it can be repaired without taking active control.
 				if (
@@ -651,8 +707,9 @@ export class RodecasterDevice extends EventEmitter {
 				if (entry.mixes.some((mix) => !this.layout.mixCellPath(entry.source, mix))) {
 					throw new Error('send is absent from the current layout')
 				}
-				await this.relinkSends(entry.source, entry.mixes)
+				await this.relinkSends(entry.source, entry.mixes, entry.identity)
 				guard()
+				this.checkRecoveryIdentity(entry.identity)
 				this.pendingRepair = this.pendingRepair.filter((e) => e !== entry)
 				this.log('info', `relinked sends of source ${entry.source} left borrowed by a previous run`)
 			} catch (err) {
@@ -1057,6 +1114,21 @@ export class RodecasterDevice extends EventEmitter {
 			}
 		}
 	}
+}
+
+/** The USB product ID identifies the model; paths and display names are not identity. */
+function knownIdentity(identity) {
+	return (
+		typeof identity?.serialNumber === 'string' &&
+		identity.serialNumber.trim().length > 0 &&
+		Number.isInteger(identity.productId) &&
+		identity.productId > 0 &&
+		identity.productId <= 0xffff
+	)
+}
+
+function sameIdentity(a, b) {
+	return knownIdentity(a) && knownIdentity(b) && a.serialNumber === b.serialNumber && a.productId === b.productId
 }
 
 /** @param {number} v @param {number} lo @param {number} hi */

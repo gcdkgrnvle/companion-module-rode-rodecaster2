@@ -60,6 +60,9 @@ export class RodecasterInstance extends InstanceBase {
 		this.config = config
 		this.applyOptions()
 		this.rebuildDefinitions()
+		// Settings updates can carry an older journal. Keep the recovery state
+		// owned by the running device, including records for other desks.
+		this.persistBorrowed(this.device.borrowedList())
 		if (serialChanged) {
 			await this.device.stop()
 			this.device.start()
@@ -153,12 +156,15 @@ export class RodecasterInstance extends InstanceBase {
 		if (ids.length) this.checkFeedbacks(...ids)
 	}
 
-	/** @param {Array<{ strip: number, source: number, mixes: number[] }>} list */
+	/** @param {Array<import('./device.js').RecoveryEntry>} list */
 	persistBorrowed(list) {
 		// Every update must preserve unresolved startup repairs as well as sends
 		// borrowed in this run, including updates while a repair is awaiting HID.
-		const recovery = [...this.device.pendingRepair, ...list]
-		const unlinkedSends = JSON.stringify(recovery.map((e) => ({ source: e.source, mixes: e.mixes })))
+		const recovery = [
+			...this.device.pendingRepair,
+			...list.map((e) => ({ source: e.source, mixes: e.mixes, identity: e.identity })),
+		]
+		const unlinkedSends = JSON.stringify(recovery)
 		if (unlinkedSends === (this.config.unlinkedSends ?? '[]')) return
 		this.config = { ...this.config, unlinkedSends }
 		try {
@@ -174,7 +180,7 @@ function parseUnlinked(text) {
 	if (!text) return []
 	try {
 		const list = JSON.parse(text)
-		return Array.isArray(list) ? list.filter((e) => typeof e.source === 'number' && Array.isArray(e.mixes)) : []
+		return Array.isArray(list) ? list.filter((e) => e && typeof e.source === 'number' && Array.isArray(e.mixes)) : []
 	} catch {
 		return []
 	}

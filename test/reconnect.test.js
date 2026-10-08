@@ -28,6 +28,7 @@ hooks.deregister()
 
 const RECONNECT_MS = 3000
 const READY_TIMEOUT_MS = 8000
+const identity = { serialNumber: 'synthetic-reconnect-serial', productId: 1 }
 const flush = () => new Promise((resolve) => setImmediate(resolve))
 
 class FakeTimers {
@@ -71,6 +72,10 @@ class FakeHid extends EventEmitter {
 	closeCalls = 0
 	beforeWrite = async () => {}
 	beforeClose = async () => {}
+
+	async getDeviceInfo() {
+		return { ...identity }
+	}
 
 	async write(report) {
 		this.writes.push(Buffer.from(report))
@@ -618,7 +623,7 @@ test('a stale successful repair cannot retire pending repair or update the new f
 		if (count > 2) throw new Error('synthetic replacement repair failure')
 	}
 	h.backend.makeDevice = () => (h.backend.opened.length === 0 ? old : next)
-	const pending = [{ source: 0, mixes: [0, 1] }]
+	const pending = [{ source: 0, mixes: [0, 1], identity }]
 	h.device.setPendingRepair(pending)
 	await ready(h)
 	assert.equal(old.writes.length, 3, 'the first repair write is pending')
@@ -641,7 +646,7 @@ test('a stale borrowed-send release cannot delete current borrowing or update th
 	const h = fixture(t)
 	h.backend.makeDevice = repairHid
 	const old = await ready(h)
-	const borrowed = { source: 0, mixes: [0, 1], anchor: 0.5 }
+	const borrowed = { source: 0, mixes: [0, 1], anchor: 0.5, identity }
 	h.device.borrowed.set(0, borrowed)
 	const gate = h.gate()
 	old.beforeWrite = () => gate.promise
