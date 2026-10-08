@@ -46,7 +46,6 @@ export function updateActions(self) {
 			self.log('warn', `${name}: ${err.message}`)
 		}
 	}
-	let headphoneMuteQueue = Promise.resolve()
 
 	self.setActionDefinitions({
 		strip_mute: {
@@ -54,7 +53,7 @@ export function updateActions(self) {
 			options: [stripField, modeField],
 			callback: guard('mute', async (e) => {
 				const i = Number(e.options.strip)
-				await dev.setStripMute(i, resolve(String(e.options.mode), dev.strip(i).muted))
+				await dev.setStripMute(i, () => resolve(String(e.options.mode), dev.strip(i).muted))
 			}),
 		},
 		strip_cue: {
@@ -62,7 +61,7 @@ export function updateActions(self) {
 			options: [stripField, modeField],
 			callback: guard('cue', async (e) => {
 				const i = Number(e.options.strip)
-				await dev.setStripCue(i, resolve(String(e.options.mode), dev.strip(i).cued))
+				await dev.setStripCue(i, () => resolve(String(e.options.mode), dev.strip(i).cued))
 			}),
 		},
 		strip_level_step: {
@@ -112,14 +111,14 @@ export function updateActions(self) {
 			name: 'Monitor: Mute',
 			options: [modeField],
 			callback: guard('monitor mute', async (e) =>
-				dev.setMonitorMute(resolve(String(e.options.mode), dev.monitorMuted)),
+				dev.setMonitorMute(() => resolve(String(e.options.mode), dev.monitorMuted)),
 			),
 		},
 		headphones_off: {
 			name: 'Headphones: All off',
 			options: [modeField],
 			callback: guard('headphones off', async (e) =>
-				dev.setHeadphonesOff(resolve(String(e.options.mode), dev.headphonesOff)),
+				dev.setHeadphonesOff(() => resolve(String(e.options.mode), dev.headphonesOff)),
 			),
 		},
 		headphone_mix_mute: {
@@ -136,20 +135,15 @@ export function updateActions(self) {
 				modeField,
 			],
 			callback: guard('headphone mix mute', async (e) => {
-				// Resolve toggles after the preceding action has updated the desk's local state.
-				const operation = headphoneMuteQueue.then(async () => {
-					const n = Number(e.options.headphone)
-					await dev.setHeadphoneMixMute(n, resolve(String(e.options.mode), dev.headphoneMixMuted(n)))
-				})
-				headphoneMuteQueue = operation.catch(() => {})
-				await operation
+				const n = Number(e.options.headphone)
+				await dev.setHeadphoneMixMute(n, () => resolve(String(e.options.mode), dev.headphoneMixMuted(n)))
 			}),
 		},
 		bluetooth_level_step: {
 			name: 'Bluetooth: Send level up / down',
 			options: [{ id: 'delta', type: 'number', label: 'Step (%)', default: 5, min: -100, max: 100 }],
 			callback: guard('bluetooth step', async (e) =>
-				dev.setBluetoothLevel(dev.bluetoothLevel + Number(e.options.delta) / 100),
+				dev.setBluetoothLevel(() => dev.bluetoothLevel + Number(e.options.delta) / 100),
 			),
 		},
 		panic: {
@@ -158,9 +152,7 @@ export function updateActions(self) {
 				'Kills every output; releasing restores exactly what was muted before. Use "on" on press and "off" on release.',
 			options: [modeField],
 			callback: guard('panic', async (e) => {
-				const on = resolve(String(e.options.mode), dev.panicActive)
-				if (on) await dev.panic()
-				else await dev.releasePanic()
+				await dev.queuePanic(() => resolve(String(e.options.mode), dev.panicActive))
 			}),
 		},
 		record: {
@@ -181,11 +173,10 @@ export function updateActions(self) {
 			],
 			callback: guard('record', async (e) => {
 				const mode = String(e.options.mode)
-				const state = dev.recordState
 				if (mode === 'record') await dev.requestRecord(2)
 				else if (mode === 'pause') await dev.requestRecord(1)
 				else if (mode === 'stop') await dev.requestRecord(0)
-				else await dev.requestRecord(state === 2 ? 1 : 2)
+				else await dev.requestRecord(() => (dev.recordToggleState === 2 ? 1 : 2))
 			}),
 		},
 		drop_marker: {
@@ -217,8 +208,8 @@ export function updateActions(self) {
 			],
 			callback: guard('bank', async (e) => {
 				const b = e.options.bank
-				if (b === 'next') await dev.setPadBank((dev.padBank + 1) % 8)
-				else if (b === 'prev') await dev.setPadBank((dev.padBank + 7) % 8)
+				if (b === 'next') await dev.setPadBank(() => (dev.padBank + 1) % 8)
+				else if (b === 'prev') await dev.setPadBank(() => (dev.padBank + 7) % 8)
 				else await dev.setPadBank(Number(b))
 			}),
 		},
@@ -238,7 +229,7 @@ export function updateActions(self) {
 			callback: guard('fx', async (e) => {
 				const slot = Number(e.options.slot)
 				const effect = String(e.options.effect)
-				await dev.setFx(slot, effect, resolve(String(e.options.mode), dev.fxOn(slot, effect)))
+				await dev.setFx(slot, effect, () => resolve(String(e.options.mode), dev.fxOn(slot, effect)))
 			}),
 		},
 		screen_brightness: {
@@ -249,7 +240,7 @@ export function updateActions(self) {
 			],
 			callback: guard('screen brightness', async (e) => {
 				const v = Number(e.options.value)
-				await dev.setScreenBrightness(e.options.op === 'step' ? dev.screenBrightness + v : v)
+				await dev.setScreenBrightness(() => (e.options.op === 'step' ? dev.screenBrightness + v : v))
 			}),
 		},
 		buttons_brightness: {
@@ -260,7 +251,7 @@ export function updateActions(self) {
 			],
 			callback: guard('button brightness', async (e) => {
 				const v = Number(e.options.value)
-				await dev.setButtonsBrightness(e.options.op === 'step' ? dev.buttonsBrightness + v : v)
+				await dev.setButtonsBrightness(() => (e.options.op === 'step' ? dev.buttonsBrightness + v : v))
 			}),
 		},
 		ducker_depth: {
@@ -271,7 +262,7 @@ export function updateActions(self) {
 			],
 			callback: guard('ducker', async (e) => {
 				const v = Number(e.options.value)
-				await dev.setDuckerDepth(e.options.op === 'step' ? dev.duckerDepth + v : v)
+				await dev.setDuckerDepth(() => (e.options.op === 'step' ? dev.duckerDepth + v : v))
 			}),
 		},
 	})

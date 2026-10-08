@@ -37,6 +37,11 @@ const READY_TIMEOUT_MS = 8000
 const PAD_PRESS_MS = 80
 const CHANNEL_SOURCE_UNASSIGNED = -1
 
+// Waiting operations, in addition to the single active operation. Panic has
+// its own bounded reserve and runs before the normal backlog.
+export const OPERATION_QUEUE_CAPACITY = 128
+export const PANIC_QUEUE_CAPACITY = 8
+
 /**
  * @typedef {object} StripInfo
  * @property {number} index 0-based strip
@@ -85,10 +90,16 @@ export class RodecasterDevice extends EventEmitter {
 		this.borrowed = new Map()
 		/** @type {Map<number, Set<number>>} headphone (1..4) -> sources muted here */
 		this.headphoneMutes = new Map()
-		this.headphoneMuteQueue = Promise.resolve()
+		this.operationQueue = []
+		this.priorityOperations = []
+		this.operationActive = false
+		this.operationEpoch = 0
+		this.recordRequest = null
+		this.recordStateRevision = 0
+		this.monitorRequest = null
+		this.monitorLevelRevision = 0
 		/** @type {ReturnType<RodecasterDevice['capturePanic']> | null} */
 		this.panicSnapshot = null
-		this.panicQueue = Promise.resolve()
 		this.connectionGeneration = 0
 		/** @type {RecoveryEntry[]} sends to relink when their original desk is ready */
 		this.pendingRepair = []
@@ -103,6 +114,8 @@ export class RodecasterDevice extends EventEmitter {
 
 	/** @param {Partial<typeof this.options>} options */
 	setOptions(options) {
+		if (options.monitorMethod !== undefined && options.monitorMethod !== this.options.monitorMethod)
+			this.monitorRequest = null
 		Object.assign(this.options, options)
 		this.emit('update', 'all')
 	}
@@ -117,12 +130,13 @@ export class RodecasterDevice extends EventEmitter {
 		this.running = false
 		if (this.stopping) return this.stopping
 		this.connectionGeneration++
+		this.invalidateOperations()
 		this.clearTimers()
 		this.detachTransportListeners()
 		this.connecting = false
 		this.syncRequest = null
 		this.stopping = (async () => {
-			if (this.borrowed.size > 0 && this.ready) await this.restoreFaders().catch(() => {})
+			if (this.borrowed.size > 0 && this.ready) await this._restoreFaders(this.connectionGuard()).catch(() => {})
 			await this.transport.close()
 			this.ready = false
 			this.session.reset()
@@ -173,6 +187,7 @@ export class RodecasterDevice extends EventEmitter {
 	async connect() {
 		if (!this.running || this.transport.isOpen || this.connecting || this.closing || this.stopping) return
 		const generation = ++this.connectionGeneration
+		this.invalidateOperations()
 		this.connecting = true
 		this.clearTimers()
 		this.ready = false
@@ -227,6 +242,7 @@ export class RodecasterDevice extends EventEmitter {
 		if (!this.isCurrentConnection(generation) || !this.transport.isOpen) return
 		this.ready = false
 		if (this.syncRequest) return
+		this.invalidateOperations()
 		const request = (this.syncRequest = {})
 		this.borrowedBeforeResync = new Map(this.borrowed)
 		this.armReadyTimeout(generation)
@@ -256,6 +272,7 @@ export class RodecasterDevice extends EventEmitter {
 		if (generation !== this.connectionGeneration || this.closing) return this.closing
 		if (!this.connecting && !this.connectionListeners && !this.transport.isOpen) return
 		const disconnectedGeneration = ++this.connectionGeneration
+		this.invalidateOperations()
 		const wasReady = this.ready
 		this.ready = false
 		this.connecting = false
@@ -291,6 +308,7 @@ export class RodecasterDevice extends EventEmitter {
 
 	onReady() {
 		if (!this.transport.isOpen || !this.session.isReady) return
+		this.invalidateOperations()
 		if (this.readyTimer !== null) this.timers.clearTimeout(this.readyTimer)
 		this.readyTimer = null
 		this.syncRequest = null
@@ -376,6 +394,62 @@ export class RodecasterDevice extends EventEmitter {
 			) {
 				throw new Error('desk connection or layout changed')
 			}
+		}
+	}
+
+	/**
+	 * Serialize the whole read/modify/write operation, including its state read.
+	 * Callbacks use unqueued helpers and pass their guard to every write; a
+	 * callback must never await another queueOperation on this device.
+	 * @template T
+	 * @param {(guard: () => void) => Promise<T>} run
+	 * @param {{ priority?: boolean }} [options]
+	 * @returns {Promise<T>}
+	 */
+	queueOperation(run, { priority = false } = {}) {
+		return new Promise((resolve, reject) => {
+			const connectionGuard = this.connectionGuard()
+			const epoch = this.operationEpoch
+			const guard = () => {
+				connectionGuard()
+				if (this.stopping || epoch !== this.operationEpoch) throw new Error('desk connection or layout changed')
+			}
+			guard()
+			const queue = priority ? this.priorityOperations : this.operationQueue
+			const capacity = priority ? PANIC_QUEUE_CAPACITY : OPERATION_QUEUE_CAPACITY
+			if (queue.length >= capacity) throw new Error(`${priority ? 'panic' : 'operation'} queue is full`)
+			queue.push({ run, guard, resolve, reject })
+			void this.drainOperations()
+		})
+	}
+
+	async drainOperations() {
+		if (this.operationActive) return
+		this.operationActive = true
+		try {
+			while (this.priorityOperations.length || this.operationQueue.length) {
+				const operation = this.priorityOperations.shift() ?? this.operationQueue.shift()
+				try {
+					operation.guard()
+					const result = await operation.run(operation.guard)
+					operation.guard()
+					operation.resolve(result)
+				} catch (err) {
+					operation.reject(err)
+				}
+			}
+		} finally {
+			this.operationActive = false
+		}
+	}
+
+	/** Reject waiting work immediately; an active write retains its slot until settled. */
+	invalidateOperations() {
+		this.operationEpoch++
+		this.recordRequest = null
+		this.monitorRequest = null
+		for (const queue of [this.priorityOperations, this.operationQueue]) {
+			for (const operation of queue.splice(0)) operation.reject(new Error('desk connection or layout changed'))
 		}
 	}
 
@@ -520,16 +594,22 @@ export class RodecasterDevice extends EventEmitter {
 		return out
 	}
 
-	/** @param {number} i @param {boolean} muted */
-	async setStripMute(i, muted) {
-		await this.write(this.channelPath(i), 'channelOutputMute', V.bool(muted))
-		this.emit('update', 'strips')
+	/** @param {number} i @param {boolean | (() => boolean)} muted */
+	setStripMute(i, muted) {
+		return this.queueOperation(async (guard) => {
+			muted = operationValue(muted)
+			await this.write(this.channelPath(i), 'channelOutputMute', V.bool(muted), guard)
+			this.emit('update', 'strips')
+		})
 	}
 
-	/** @param {number} i @param {boolean} cued */
-	async setStripCue(i, cued) {
-		await this.write(this.channelPath(i), 'channelCueEnable', V.bool(cued))
-		this.emit('update', 'strips')
+	/** @param {number} i @param {boolean | (() => boolean)} cued */
+	setStripCue(i, cued) {
+		return this.queueOperation(async (guard) => {
+			cued = operationValue(cued)
+			await this.write(this.channelPath(i), 'channelCueEnable', V.bool(cued), guard)
+			this.emit('update', 'strips')
+		})
 	}
 
 	// ---------------------------------------------------------------- level control (borrowing)
@@ -543,8 +623,11 @@ export class RodecasterDevice extends EventEmitter {
 	 * can be driven. Sends the user disabled or already unlinked are left alone.
 	 * @param {number} i
 	 */
-	async borrowStrip(i) {
-		const guard = this.connectionGuard()
+	borrowStrip(i) {
+		return this.queueOperation((guard) => this._borrowStrip(i, guard))
+	}
+
+	async _borrowStrip(i, guard) {
 		guard()
 		if (!this.levelControlEnabled) throw new Error('level control is locked (enable it in the connection settings)')
 		if (this.borrowed.has(i)) {
@@ -572,7 +655,7 @@ export class RodecasterDevice extends EventEmitter {
 		this.emit('borrowed', this.borrowedList())
 		for (const c of cells) {
 			guard()
-			await this.write(c.path, 'mixUnlinkRequest', pressValue())
+			await this.write(c.path, 'mixUnlinkRequest', pressValue(), guard)
 			guard()
 			this.tree.getByPath(c.path)?.properties.set('mixLink', V.bool(false))
 		}
@@ -583,35 +666,41 @@ export class RodecasterDevice extends EventEmitter {
 	/**
 	 * Drive a borrowed strip to `level` (0..1), borrowing it first if needed.
 	 * @param {number} i
-	 * @param {number} level
+	 * @param {number | (() => number)} level
 	 */
-	async setStripLevel(i, level) {
-		const guard = this.connectionGuard()
-		const entry = await this.borrowStrip(i)
+	setStripLevel(i, level) {
+		return this.queueOperation((guard) => this._setStripLevel(i, operationValue(level), guard))
+	}
+
+	async _setStripLevel(i, level, guard) {
+		const entry = await this._borrowStrip(i, guard)
 		guard()
 		const target = clamp01(level)
 		for (const c of this.stripCells(i)) {
 			guard()
 			if (!entry.mixes.includes(c.mix)) continue
-			await this.write(c.path, 'mixLevelWithAnchor', V.string(formatMixLevel(target, c.anchor)))
+			await this.write(c.path, 'mixLevelWithAnchor', V.string(formatMixLevel(target, c.anchor)), guard)
 		}
 		this.emit('update', 'strips')
 	}
 
 	/** @param {number} i @param {number} delta signed, 0..1 scale */
-	async stepStripLevel(i, delta) {
-		const current = this.strip(i).level
-		await this.setStripLevel(i, current + delta)
+	stepStripLevel(i, delta) {
+		return this.setStripLevel(i, () => this.strip(i).level + delta)
 	}
 
 	/**
 	 * Hand a strip back to its fader: relink every send this module unlinked.
 	 * @param {number} i
 	 */
-	async releaseStrip(i) {
+	releaseStrip(i) {
+		return this.queueOperation((guard) => this._releaseStrip(i, guard))
+	}
+
+	async _releaseStrip(i, guard) {
+		guard()
 		const entry = this.borrowed.get(i)
 		if (!entry) return
-		const guard = this.connectionGuard()
 		await this.relinkSends(entry.source, entry.mixes, entry.identity)
 		guard()
 		this.checkRecoveryIdentity(entry.identity)
@@ -640,8 +729,12 @@ export class RodecasterDevice extends EventEmitter {
 	}
 
 	/** Relink everything this module borrowed. */
-	async restoreFaders() {
-		for (const i of [...this.borrowed.keys()]) await this.releaseStrip(i)
+	restoreFaders() {
+		return this.queueOperation((guard) => this._restoreFaders(guard))
+	}
+
+	async _restoreFaders(guard) {
+		for (const i of [...this.borrowed.keys()]) await this._releaseStrip(i, guard)
 	}
 
 	/** @returns {Array<RecoveryEntry & { strip: number }>} */
@@ -750,6 +843,19 @@ export class RodecasterDevice extends EventEmitter {
 		return this.propNumber(this.outputPath, 'outputMonLevel') ?? 0
 	}
 
+	/** Encoder writes acknowledge ticks before the resulting level push may arrive. */
+	get monitorTargetLevel() {
+		if (this.monitorRequest) {
+			try {
+				this.monitorRequest.guard()
+				return this.monitorRequest.level
+			} catch {
+				this.monitorRequest = null
+			}
+		}
+		return this.monitorLevel
+	}
+
 	get monitorMuted() {
 		return this.propBool(this.outputPath, 'outputMonMute') ?? false
 	}
@@ -809,77 +915,85 @@ export class RodecasterDevice extends EventEmitter {
 	 * before each write: a rejected write might still have reached the desk.
 	 * Panic uses strip/output mutes, so its restore never touches these cells.
 	 * @param {number} n 1..4
-	 * @param {boolean} muted
+	 * @param {boolean | (() => boolean)} muted
 	 */
-	async setHeadphoneMixMute(n, muted) {
-		if (!Number.isInteger(n) || n < 1 || n > 4) throw new Error('headphone must be 1..4')
-		const guard = this.connectionGuard()
-		const operation = this.headphoneMuteQueue.then(async () => {
-			try {
-				guard()
-				const cells = this.headphoneMixCells(n)
-				let sources = this.headphoneMutes.get(n)
-				if (!sources) {
-					// An empty record is meaningful: an explicit mute acquired no
-					// sends. Only an unmute with NO record gets the desk-mute fallback.
-					sources = new Set(muted ? [] : cells.filter((c) => !c.disabled && c.muted !== false).map((c) => c.source))
-					this.headphoneMutes.set(n, sources)
-					this.emit('headphoneMutes', this.headphoneMuteList())
-				}
-				if (muted) {
-					for (const cell of cells) {
-						guard()
-						// The desk may have changed a later cell while an earlier
-						// write was awaiting HID. Respect its current state.
-						if (this.propBool(cell.path, 'mixDisabled') === true || this.propBool(cell.path, 'mixMute') === true)
-							continue
-						if (!sources.has(cell.source)) {
-							sources.add(cell.source)
-							this.emit('headphoneMutes', this.headphoneMuteList())
-						}
-						// mixMute is a separate property from mixLink; do not borrow
-						// the fader or alter any other output to mute this send.
-						await this.write(cell.path, 'mixMute', V.bool(true), guard)
-					}
-				} else {
-					for (const source of [...sources]) {
-						guard()
-						const path = this.layout.mixCellPath(source, n - 1)
-						// Retain disabled or absent sends for a later restore.
-						if (!path || this.propBool(path, 'mixDisabled') === true) continue
-						// Even a locally unmuted send may have an uncertain mute write.
-						await this.write(path, 'mixMute', V.bool(false), guard)
-						sources.delete(source)
-						this.emit('headphoneMutes', this.headphoneMuteList())
-					}
-					if (sources.size === 0) {
-						this.headphoneMutes.delete(n)
-						this.emit('headphoneMutes', this.headphoneMuteList())
-					}
-				}
-			} finally {
-				this.emit('update', 'monitor')
-			}
-		})
-		this.headphoneMuteQueue = operation.catch(() => {})
-		await operation
+	setHeadphoneMixMute(n, muted) {
+		return this.queueOperation((guard) => this._setHeadphoneMixMute(n, operationValue(muted), guard))
 	}
 
-	/** @param {number} level 0..1 */
-	async setMonitorLevel(level) {
+	async _setHeadphoneMixMute(n, muted, guard) {
+		if (!Number.isInteger(n) || n < 1 || n > 4) throw new Error('headphone must be 1..4')
+		try {
+			guard()
+			const cells = this.headphoneMixCells(n)
+			let sources = this.headphoneMutes.get(n)
+			if (!sources) {
+				// An empty record is meaningful: an explicit mute acquired no
+				// sends. Only an unmute with NO record gets the desk-mute fallback.
+				sources = new Set(muted ? [] : cells.filter((c) => !c.disabled && c.muted !== false).map((c) => c.source))
+				this.headphoneMutes.set(n, sources)
+				this.emit('headphoneMutes', this.headphoneMuteList())
+			}
+			if (muted) {
+				for (const cell of cells) {
+					guard()
+					// The desk may have changed a later cell while an earlier
+					// write was awaiting HID. Respect its current state.
+					if (this.propBool(cell.path, 'mixDisabled') === true || this.propBool(cell.path, 'mixMute') === true) continue
+					if (!sources.has(cell.source)) {
+						sources.add(cell.source)
+						this.emit('headphoneMutes', this.headphoneMuteList())
+					}
+					// mixMute is a separate property from mixLink; do not borrow
+					// the fader or alter any other output to mute this send.
+					await this.write(cell.path, 'mixMute', V.bool(true), guard)
+				}
+			} else {
+				for (const source of [...sources]) {
+					guard()
+					const path = this.layout.mixCellPath(source, n - 1)
+					// Retain disabled or absent sends for a later restore.
+					if (!path || this.propBool(path, 'mixDisabled') === true) continue
+					// Even a locally unmuted send may have an uncertain mute write.
+					await this.write(path, 'mixMute', V.bool(false), guard)
+					sources.delete(source)
+					this.emit('headphoneMutes', this.headphoneMuteList())
+				}
+				if (sources.size === 0) {
+					this.headphoneMutes.delete(n)
+					this.emit('headphoneMutes', this.headphoneMuteList())
+				}
+			}
+		} finally {
+			this.emit('update', 'monitor')
+		}
+	}
+
+	/** @param {number | (() => number)} level 0..1 */
+	setMonitorLevel(level) {
+		return this.queueOperation((guard) => this._setMonitorLevel(operationValue(level), guard))
+	}
+
+	async _setMonitorLevel(level, guard) {
 		const target = Math.round(clamp01(level) * 100) / 100
 		if (this.options.monitorMethod === 'encoder') {
-			const ticks = Math.round((target - this.monitorLevel) * 100)
-			await this.encoderTicks(ticks)
+			const ticks = Math.round((target - this.monitorTargetLevel) * 100)
+			await this._encoderTicks(ticks, guard)
 			return
 		}
-		await this.write(this.outputPath, 'outputMonLevel', V.double(target))
+		await this.write(this.outputPath, 'outputMonLevel', V.double(target), guard)
+		this.monitorRequest = null
 		this.emit('update', 'monitor')
 	}
 
 	/** @param {number} delta signed, 0..1 scale */
-	async stepMonitorLevel(delta) {
-		await this.setMonitorLevel(this.monitorLevel + delta)
+	stepMonitorLevel(delta) {
+		return this.queueOperation((guard) => {
+			// Encoder steps are relative on the desk too; do not depend on a
+			// delayed outputMonLevel push to preserve every tick.
+			if (this.options.monitorMethod === 'encoder') return this._encoderTicks(Math.round(delta * 100), guard)
+			return this._setMonitorLevel(this.monitorLevel + delta, guard)
+		})
 	}
 
 	/**
@@ -888,33 +1002,52 @@ export class RodecasterDevice extends EventEmitter {
 	 * like the hardware does so every tick is a distinct change.
 	 * @param {number} ticks signed
 	 */
-	async encoderTicks(ticks) {
+	encoderTicks(ticks) {
+		return this.queueOperation((guard) => this._encoderTicks(ticks, guard))
+	}
+
+	async _encoderTicks(ticks, guard) {
 		const path = this.rootPathOfType('ENCODER')
 		if (!path) throw new Error('no ENCODER node')
 		const n = Math.min(100, Math.abs(ticks))
 		const delta = ticks < 0 ? -1 : 1
 		for (let k = 0; k < n; k++) {
+			const level = Math.round(clamp01(this.monitorTargetLevel + delta / 100) * 100) / 100
+			const revision = this.monitorLevelRevision
 			this.encoderPhase = !this.encoderPhase
-			await this.write(path, 'encoderSignal', V.binary(encoderSignal(delta, this.encoderPhase)))
+			await this.write(path, 'encoderSignal', V.binary(encoderSignal(delta, this.encoderPhase)), guard)
+			// Retain only acknowledged movement, including a partially failed
+			// command. Feedback remains the desk's confirmed monitorLevel.
+			this.monitorRequest =
+				revision !== this.monitorLevelRevision && Math.abs(this.monitorLevel - level) < 1e-9 ? null : { level, guard }
 		}
 	}
 
-	/** @param {boolean} muted */
-	async setMonitorMute(muted) {
-		await this.write(this.outputPath, 'outputMonMute', V.bool(muted))
-		this.emit('update', 'monitor')
+	/** @param {boolean | (() => boolean)} muted */
+	setMonitorMute(muted) {
+		return this.queueOperation(async (guard) => {
+			muted = operationValue(muted)
+			await this.write(this.outputPath, 'outputMonMute', V.bool(muted), guard)
+			this.emit('update', 'monitor')
+		})
 	}
 
-	/** @param {boolean} off */
-	async setHeadphonesOff(off) {
-		await this.write(this.systemPath, 'disableAllHeadphoneOutputs', V.bool(off))
-		this.emit('update', 'monitor')
+	/** @param {boolean | (() => boolean)} off */
+	setHeadphonesOff(off) {
+		return this.queueOperation(async (guard) => {
+			off = operationValue(off)
+			await this.write(this.systemPath, 'disableAllHeadphoneOutputs', V.bool(off), guard)
+			this.emit('update', 'monitor')
+		})
 	}
 
-	/** @param {number} level 0..1 */
-	async setBluetoothLevel(level) {
-		await this.write(this.outputPath, 'outputBTLevel', V.double(clamp01(level)))
-		this.emit('update', 'monitor')
+	/** @param {number | (() => number)} level 0..1 */
+	setBluetoothLevel(level) {
+		return this.queueOperation(async (guard) => {
+			level = operationValue(level)
+			await this.write(this.outputPath, 'outputBTLevel', V.double(clamp01(level)), guard)
+			this.emit('update', 'monitor')
+		})
 	}
 
 	// ---------------------------------------------------------------- panic
@@ -989,38 +1122,41 @@ export class RodecasterDevice extends EventEmitter {
 		}
 	}
 
-	/** @param {boolean} muted */
+	/** @param {boolean | (() => boolean)} muted */
 	queuePanic(muted) {
-		// The caller keeps its rejection; only the queue tail swallows it so a
-		// later request can retry or reverse direction after a partial failure.
-		const operation = this.panicQueue.then(async () => {
-			try {
-				if (!this.panicSnapshot) {
-					if (!muted) return
-					this.panicSnapshot = this.capturePanic()
+		return this.queueOperation(
+			async (operationGuard) => {
+				muted = operationValue(muted)
+				try {
+					if (!this.panicSnapshot) {
+						if (!muted) return
+						this.panicSnapshot = this.capturePanic()
+						this.emit('update', 'all')
+					}
+					const snap = this.panicSnapshot
+					const guard = () => {
+						operationGuard()
+						this.checkPanicIdentity(snap)
+					}
+					guard()
+					for (const target of snap.targets) {
+						if (target.muted === muted) continue
+						guard()
+						// A rejected write may still have reached the desk. Keep it
+						// uncertain until an idempotent mute or restore is acknowledged.
+						target.muted = null
+						await this.write(target.path, target.name, V.bool(muted), guard)
+						guard()
+						target.muted = muted
+					}
+					if (!muted) this.panicSnapshot = null
+				} finally {
+					// Failures must also refresh panicActive feedback and partial state.
 					this.emit('update', 'all')
 				}
-				const snap = this.panicSnapshot
-				const guard = () => this.checkPanicIdentity(snap)
-				guard()
-				for (const target of snap.targets) {
-					if (target.muted === muted) continue
-					guard()
-					// A rejected write may still have reached the desk. Keep it
-					// uncertain until an idempotent mute or restore is acknowledged.
-					target.muted = null
-					await this.write(target.path, target.name, V.bool(muted), guard)
-					guard()
-					target.muted = muted
-				}
-				if (!muted) this.panicSnapshot = null
-			} finally {
-				// Failures must also refresh panicActive feedback and partial state.
-				this.emit('update', 'all')
-			}
-		})
-		this.panicQueue = operation.catch(() => {})
-		return operation
+			},
+			{ priority: true },
+		)
 	}
 
 	// ---------------------------------------------------------------- recorder
@@ -1033,9 +1169,31 @@ export class RodecasterDevice extends EventEmitter {
 		return this.clock.elapsedSeconds
 	}
 
-	/** @param {0 | 1 | 2} state 0 stop, 1 pause, 2 record */
-	async requestRecord(state) {
-		await this.write(this.recorderPath, 'requestRecordState', V.int(state))
+	/** Last acknowledged request until the desk reports its actual record state. */
+	get recordToggleState() {
+		if (this.recordRequest) {
+			try {
+				this.recordRequest.guard()
+				return this.recordRequest.state
+			} catch {
+				this.recordRequest = null
+			}
+		}
+		return this.recordState
+	}
+
+	/** @param {0 | 1 | 2 | (() => 0 | 1 | 2)} state 0 stop, 1 pause, 2 record */
+	requestRecord(state) {
+		return this.queueOperation(async (guard) => {
+			state = operationValue(state)
+			const revision = this.recordStateRevision
+			await this.write(this.recorderPath, 'requestRecordState', V.int(state), guard)
+			// A side-effect can arrive before the write resolves. Do not hide
+			// a confirmed result (or recorder error) behind a stale request.
+			const reported = revision !== this.recordStateRevision
+			this.recordRequest =
+				reported && (this.recordState === state || ![0, 1, 2].includes(this.recordState)) ? null : { state, guard }
+		})
 	}
 
 	async dropMarker() {
@@ -1048,10 +1206,13 @@ export class RodecasterDevice extends EventEmitter {
 		return this.propInt(this.guiPath, 'selectedBank') ?? 0
 	}
 
-	/** @param {number} bank 0..7 */
-	async setPadBank(bank) {
-		await this.write(this.guiPath, 'selectedBank', V.int(Math.max(0, Math.min(7, bank))))
-		this.emit('update', 'pads')
+	/** @param {number | (() => number)} bank 0..7 */
+	setPadBank(bank) {
+		return this.queueOperation(async (guard) => {
+			bank = operationValue(bank)
+			await this.write(this.guiPath, 'selectedBank', V.int(Math.max(0, Math.min(7, bank))), guard)
+			this.emit('update', 'pads')
+		})
 	}
 
 	/** PADBUTTON nodes under PHYSICALINTERFACE. @returns {number[][]} paths */
@@ -1120,10 +1281,13 @@ export class RodecasterDevice extends EventEmitter {
 		return this.propBool(this.ready ? this.layout.effectsPath(slot) : null, effect) ?? false
 	}
 
-	/** @param {number} slot @param {string} effect @param {boolean} on */
-	async setFx(slot, effect, on) {
-		await this.write(this.layout.effectsPath(slot), effect, V.bool(on))
-		this.emit('update', 'fx')
+	/** @param {number} slot @param {string} effect @param {boolean | (() => boolean)} on */
+	setFx(slot, effect, on) {
+		return this.queueOperation(async (guard) => {
+			on = operationValue(on)
+			await this.write(this.layout.effectsPath(slot), effect, V.bool(on), guard)
+			this.emit('update', 'fx')
+		})
 	}
 
 	// ---------------------------------------------------------------- desk settings
@@ -1140,22 +1304,31 @@ export class RodecasterDevice extends EventEmitter {
 		return this.propNumber(this.duckerPath, 'duckerDepth') ?? 0
 	}
 
-	/** @param {number} value 0..255 */
-	async setScreenBrightness(value) {
-		await this.write(this.guiPath, 'screenBrightness', V.int(clampInt(value, 0, 255)))
-		this.emit('update', 'gui')
+	/** @param {number | (() => number)} value 0..255 */
+	setScreenBrightness(value) {
+		return this.queueOperation(async (guard) => {
+			value = operationValue(value)
+			await this.write(this.guiPath, 'screenBrightness', V.int(clampInt(value, 0, 255)), guard)
+			this.emit('update', 'gui')
+		})
 	}
 
-	/** @param {number} value 0..255 */
-	async setButtonsBrightness(value) {
-		await this.write(this.guiPath, 'activeButtonsBrightness', V.int(clampInt(value, 0, 255)))
-		this.emit('update', 'gui')
+	/** @param {number | (() => number)} value 0..255 */
+	setButtonsBrightness(value) {
+		return this.queueOperation(async (guard) => {
+			value = operationValue(value)
+			await this.write(this.guiPath, 'activeButtonsBrightness', V.int(clampInt(value, 0, 255)), guard)
+			this.emit('update', 'gui')
+		})
 	}
 
-	/** @param {number} db ducker depth in dB (negative) */
-	async setDuckerDepth(db) {
-		await this.write(this.duckerPath, 'duckerDepth', V.double(Math.max(-60, Math.min(0, db))))
-		this.emit('update', 'gui')
+	/** @param {number | (() => number)} db ducker depth in dB (negative) */
+	setDuckerDepth(db) {
+		return this.queueOperation(async (guard) => {
+			db = operationValue(db)
+			await this.write(this.duckerPath, 'duckerDepth', V.double(Math.max(-60, Math.min(0, db))), guard)
+			this.emit('update', 'gui')
+		})
 	}
 
 	// ---------------------------------------------------------------- change routing
@@ -1179,11 +1352,23 @@ export class RodecasterDevice extends EventEmitter {
 			return
 		}
 		if (L.isSingletonPath('output', c.path)) {
+			if (name === 'outputMonLevel') {
+				this.monitorLevelRevision++
+				if (this.monitorRequest && Math.abs(this.monitorLevel - this.monitorRequest.level) < 1e-9)
+					this.monitorRequest = null
+			}
 			this.emit('update', 'monitor')
 			return
 		}
 		if (L.isSingletonPath('recorder', c.path)) {
-			if (name === 'recordState') this.clock.apply(asInt(c.value))
+			if (name === 'recordState') {
+				const state = asInt(c.value)
+				this.recordStateRevision++
+				// Earlier requests may still be arriving while newer toggles
+				// have completed. Retain the latest target until it is observed.
+				if (this.recordRequest?.state === state || ![0, 1, 2].includes(state)) this.recordRequest = null
+				this.clock.apply(state)
+			}
 			this.emit('update', 'recorder')
 			return
 		}
@@ -1239,6 +1424,11 @@ function knownIdentity(identity) {
 
 function sameIdentity(a, b) {
 	return knownIdentity(a) && knownIdentity(b) && a.serialNumber === b.serialNumber && a.productId === b.productId
+}
+
+/** @template T @param {T | (() => T)} value @returns {T} */
+function operationValue(value) {
+	return typeof value === 'function' ? value() : value
 }
 
 /** @param {number} v @param {number} lo @param {number} hi */
