@@ -10,10 +10,17 @@ Windows should work with node-hid but are untested.
 ## What it does
 
 Channel mute and cue, channel level (opt-in, by borrowing the strip from its physical fader),
-restore faders, monitor level and mute, headphones off, panic mute, record / pause / stop with
-elapsed time, drop marker, SMART pads with bank switching, voice FX per slot, screen and button
-brightness, ducker depth and Bluetooth level. Every state is a feedback and a variable, updated
-from the desk's own notifications. See [docs/DESIGN.md](docs/DESIGN.md).
+restore faders, monitor level and mute, individual headphone mix mute, all headphones off,
+panic mute, record / pause / stop with elapsed time, drop marker, SMART pads with bank switching,
+voice FX per slot, screen and button brightness, ducker depth and Bluetooth level. Every state
+is a feedback and a variable, updated from the desk's own notifications. See
+[docs/DESIGN.md](docs/DESIGN.md).
+
+The **Monitoring** presets include **HP1 MUTE** through **HP4 MUTE** for one-press mute/unmute
+of a single headphone output, including a speaker connected to Headphone 3. Other outputs stay
+unchanged. When Companion mutes a mix, unmuting restores only the sends Companion muted,
+even after a restart.
+See [the action help](companion/HELP.md#what-the-actions-do-on-the-desk) for restore behavior.
 
 ## Install for development
 

@@ -46,6 +46,7 @@ drive the wrong channel).
 | Restore faders                | `mixLinkRequest` on every send this module unlinked                                                           | `mixLink`                                                                                        |
 | Monitor level / mute          | `OUTPUT.outputMonLevel` (0-1), `OUTPUT.outputMonMute`                                                         | same                                                                                             |
 | Headphones off                | `SYSTEM.disableAllHeadphoneOutputs`                                                                           | same                                                                                             |
+| One headphone mix mute        | `MIX[source * 13 + (headphone - 1)].mixMute` on enabled sends only                                            | all enabled sends into that headphone bus muted                                                  |
 | Panic mute                    | all strips `channelOutputMute` + monitor mute, previous state remembered                                      | composed                                                                                         |
 | Record / pause / stop         | `RECORDER.requestRecordState` 2 / 1 / 0                                                                       | `recordState` 0 ready, 1 paused, 2 recording, 3 no destination; elapsed time counted on the host |
 | Drop marker                   | `RECORDER.requestDropMarker`                                                                                  | –                                                                                                |
@@ -54,8 +55,31 @@ drive the wrong channel).
 | Voice FX                      | `EFFECTS_PARAMETERS[n].{reverbOn,echoOn,pitchShiftOn,distortionOn,robotOn,voiceDisguiseOn}`                   | same                                                                                             |
 | Desk dial                     | `GUI.screenBrightness`, `GUI.activeButtonsBrightness`, `DUCKER.duckerDepth`, `OUTPUT.outputBTLevel`           | same                                                                                             |
 
-Every write is verified by the desk's own push of the property; actions report failure when the
-echo does not arrive within one second.
+The desk does not echo host writes. Successful writes update the local tree optimistically;
+desk-originated changes update the same tree and refresh the relevant feedbacks and variables.
+
+## Individual headphone mix mute
+
+- `headphone_mix_mute` selects Headphone 1-4 (mix outputs 0-3), with on, off and toggle modes.
+  It writes only that output's `mixMute` cells and skips disabled sends. Other outputs, levels
+  and link settings remain unchanged; channel level control does not need to be enabled.
+- Before each mute write, the module saves that send in the connection config's
+  `headphoneMixMutes` record. This keeps recovery possible after a crash or a write error that
+  may have reached the desk. Unmuting restores only recorded sends, including after a
+  Companion restart, so sends already muted by hand stay muted. Failed restores and sends
+  disabled since the mute stay recorded for a later restore. If no saved record exists,
+  unmute clears the mute on every non-disabled send into that headphone bus.
+- `mixMute` is written directly, without `mixUnlinkRequest`.
+  [rodecaster-protocol encodes a single mute-property write, with unlink as a separate command](https://github.com/Yeradon/rodecaster-protocol/blob/9373ccecb7ec9b03b398b2214515b4b2a0ef3ddb/src/commands.rs#L392-L420).
+  [rodey reports changing one mix cell with a direct write](https://github.com/seanheiney/rodey/blob/bc3e70ab3045561ad9d18d39a4b832ff65b7f342/docs/PROTOCOL.md#L233-L259),
+  but does not state whether it was linked. Neither establishes the audible effect on linked
+  sends, so linked-send behavior remains unverified; direct writes preserve existing links.
+- Panic uses strip/output controls separately from these mix cells. Releasing panic leaves a
+  headphone mix muted by this action alone.
+- `headphone_mix_muted` feedback and `headphone1_muted` through `headphone4_muted` variables
+  report true when every non-disabled send into that bus is muted. Desk `mixMute` changes
+  refresh the monitoring state, as do this module's writes. Monitoring presets provide
+  `headphone1_mute` through `headphone4_mute` toggle buttons with red mute feedback.
 
 ## Level control safety
 
@@ -75,8 +99,10 @@ echo does not arrive within one second.
 - Config: device serial (auto), level control opt-in, strip name overrides.
 - Actions: one per feature above, strip/pad/slot choices built from the discovered layout.
 - Feedbacks: boolean per state (muted, cued, recording, paused, pad active, bank selected,
-  monitor muted, headphones off, FX on, strip borrowed) with sensible default styles.
+  monitor muted, headphone mix muted, headphones off, FX on, strip borrowed) with sensible
+  default styles.
 - Variables: per strip (`strip_N_name`, `_muted`, `_cued`, `_level_db`, `_control`), recorder
-  (`record_state`, `record_elapsed`), monitor (`monitor_level_pct`, `_db`, `_muted`), pads
-  (`pad_bank`, `pad_N_name`, `_active`), system (`firmware`, `model`).
+  (`record_state`, `record_elapsed`), monitor (`monitor_level_pct`, `_db`, `_muted`), headphones
+  (`headphone1_muted` through `headphone4_muted`), pads (`pad_bank`, `pad_N_name`, `_active`),
+  system (`firmware`, `model`).
 - Presets: a ready-made button for every action, with feedback and variable text.

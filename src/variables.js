@@ -35,6 +35,9 @@ export function updateVariableDefinitions(self) {
 		ducker_depth_db: { name: 'Ducker depth (dB)' },
 		level_control: { name: 'Level control (enabled/locked)' },
 	}
+	for (let n = 1; n <= 4; n++) {
+		defs[`headphone${n}_muted`] = { name: `Headphone ${n} mix muted (true/false)` }
+	}
 	for (let i = 1; i <= MAX_STRIPS; i++) {
 		defs[`strip_${i}_name`] = { name: `Strip ${i} name` }
 		defs[`strip_${i}_source`] = { name: `Strip ${i} input source` }
@@ -91,6 +94,7 @@ export function updateVariableValues(self, area) {
 		v.monitor_level_db = levelToDbText(dev.monitorLevel)
 		v.monitor_muted = dev.monitorMuted
 		v.headphones_off = dev.headphonesOff
+		for (let n = 1; n <= 4; n++) v[`headphone${n}_muted`] = dev.ready && dev.headphoneMixMuted(n)
 		v.bluetooth_level_pct = levelToPercentText(dev.bluetoothLevel)
 	}
 	if (all || area === 'recorder') {
