@@ -23,7 +23,8 @@ if (process.platform === 'linux') {
 }
 
 /**
- * @typedef {{ path: string, serialNumber: string, product: string, productId: number }} ControlDeviceInfo
+ * @typedef {{ path: string, serialNumber: string, product: string, productId: number | null }} ControlDeviceInfo
+ * @typedef {{ serialNumber: string, productId: number | null }} DeviceIdentity
  */
 
 /**
@@ -60,6 +61,12 @@ export class HidTransport extends EventEmitter {
 
 	get isOpen() {
 		return this.device !== null
+	}
+
+	/** A snapshot of the opened handle's identity, never the configured selector. */
+	get identity() {
+		if (!this.isOpen || !this.info) return null
+		return { serialNumber: this.info.serialNumber, productId: this.info.productId }
 	}
 
 	/**
@@ -101,13 +108,27 @@ export class HidTransport extends EventEmitter {
 			void this.close()
 			this.emit('close', err instanceof Error ? err : new Error(String(err)))
 		})
+		let openedInfo
+		try {
+			// A discovered path can be reused before open completes. Only the
+			// opened handle can identify the desk whose sends we may recover.
+			openedInfo = await device.getDeviceInfo?.()
+		} catch (err) {
+			await this._closeDevice(device)
+			throw err
+		}
 		if (this.generation !== generation) {
 			await this._closeDevice(device)
 			throw new Error('HID open cancelled')
 		}
 		this.device = device
-		this.info = info
-		return info
+		this.info = {
+			...info,
+			serialNumber: openedInfo?.serialNumber ?? '',
+			productId: openedInfo?.productId ?? null,
+			product: openedInfo?.product ?? info.product,
+		}
+		return this.info
 	}
 
 	/**

@@ -37,6 +37,8 @@ const hooks = registerHooks({
 const { RodecasterInstance } = await import('../src/main.js')
 hooks.deregister()
 
+const identity = { serialNumber: 'synthetic-repair-journal-serial', productId: 1 }
+
 class FakeHid extends EventEmitter {
 	constructor(sourceCount = 2) {
 		super()
@@ -123,6 +125,7 @@ async function start(t, disk, hid) {
 	// Skip physical discovery/handshake; all full-sync reports and writes use the fake.
 	device.start = () => {}
 	device.transport.device = hid
+	device.transport.info = { ...identity }
 	await instance.init(disk.read())
 	const crash = () => {
 		clearInterval(instance.clockTimer)
@@ -149,7 +152,7 @@ function failLink(source, mix) {
 }
 
 test('partial startup repair survives repeated failures and restarts until eventual success', async (t) => {
-	const pending = [{ source: 0, mixes: [0, 1] }]
+	const pending = [{ source: 0, mixes: [0, 1], identity }]
 	const disk = journal(t, pending)
 	const hid = new FakeHid()
 	hid.beforeWrite = failLink(0, 1)
@@ -186,8 +189,8 @@ test('partial startup repair survives repeated failures and restarts until event
 })
 
 test('successful entries retire independently while failures remain recoverable', async (t) => {
-	const failed = { source: 0, mixes: [0] }
-	const disk = journal(t, [failed, { source: 1, mixes: [0] }])
+	const failed = { source: 0, mixes: [0], identity }
+	const disk = journal(t, [failed, { source: 1, mixes: [0], identity }])
 	const hid = new FakeHid()
 	hid.beforeWrite = failLink(0, 0)
 	const app = await start(t, disk, hid)
@@ -206,8 +209,8 @@ test('successful entries retire independently while failures remain recoverable'
 })
 
 test('borrow and release updates preserve pending repairs, including while a write is in flight', async (t) => {
-	const pending = [{ source: 0, mixes: [0] }]
-	const active = { source: 1, mixes: [0, 1] }
+	const pending = [{ source: 0, mixes: [0], identity }]
+	const active = { source: 1, mixes: [0, 1], identity }
 	const disk = journal(t, pending)
 	const hid = new FakeHid()
 	for (const mix of active.mixes) hid.cell(1, mix).properties.set('mixLink', V.bool(true))
@@ -256,7 +259,7 @@ test('a partial borrow is journaled before writes and repaired after a crash', a
 	hid.cell(0, 2).properties.set('mixDisabled', V.bool(true))
 	const app = await start(t, disk, hid)
 	await app.sync()
-	const expected = [{ source: 0, mixes: [0, 1] }]
+	const expected = [{ source: 0, mixes: [0, 1], identity }]
 	hid.beforeWrite = async (request) => {
 		assert.deepEqual(disk.entries(), expected, 'recovery must be saved before the first unlink')
 		if (request.mix === 1) throw new Error('synthetic unlink failure')
@@ -282,8 +285,8 @@ test('a partial borrow is journaled before writes and repaired after a crash', a
 })
 
 test('retrying a partial repair defers sends reborrowed in this run until they are released', async (t) => {
-	const pending = [{ source: 0, mixes: [0, 1] }]
-	const active = { source: 0, mixes: [0] }
+	const pending = [{ source: 0, mixes: [0, 1], identity }]
+	const active = { source: 0, mixes: [0], identity }
 	const disk = journal(t, pending)
 	const hid = new FakeHid()
 	hid.beforeWrite = failLink(0, 1)
@@ -316,7 +319,7 @@ test('partial release keeps borrowed recovery state until every relink succeeds'
 	await app.device.borrowStrip(0)
 	hid.beforeWrite = failLink(0, 1)
 	await assert.rejects(app.device.releaseStrip(0), /synthetic HID write failure/)
-	assert.deepEqual(disk.entries(), [{ source: 0, mixes: [0, 1] }])
+	assert.deepEqual(disk.entries(), [{ source: 0, mixes: [0, 1], identity }])
 	assert.equal(app.device.borrowed.has(0), true)
 	assert.equal(hid.linked(0, 0), true)
 	assert.equal(hid.linked(0, 1), false)
@@ -327,7 +330,7 @@ test('partial release keeps borrowed recovery state until every relink succeeds'
 })
 
 test('already linked repairs retire without issuing HID writes', async (t) => {
-	const disk = journal(t, [{ source: 0, mixes: [0, 1] }])
+	const disk = journal(t, [{ source: 0, mixes: [0, 1], identity }])
 	const hid = new FakeHid()
 	for (const mix of [0, 1]) hid.cell(0, mix).properties.set('mixLink', V.bool(true))
 	const app = await start(t, disk, hid)
@@ -337,7 +340,7 @@ test('already linked repairs retire without issuing HID writes', async (t) => {
 })
 
 test('a repair absent from the current layout remains durable until its source returns', async (t) => {
-	const pending = [{ source: 2, mixes: [0] }]
+	const pending = [{ source: 2, mixes: [0], identity }]
 	const disk = journal(t, pending)
 	const hid = new FakeHid()
 	const app = await start(t, disk, hid)
