@@ -155,7 +155,10 @@ export class RodecasterInstance extends InstanceBase {
 
 	/** @param {Array<{ strip: number, source: number, mixes: number[] }>} list */
 	persistBorrowed(list) {
-		const unlinkedSends = JSON.stringify(list.map((e) => ({ source: e.source, mixes: e.mixes })))
+		// Every update must preserve unresolved startup repairs as well as sends
+		// borrowed in this run, including updates while a repair is awaiting HID.
+		const recovery = [...this.device.pendingRepair, ...list]
+		const unlinkedSends = JSON.stringify(recovery.map((e) => ({ source: e.source, mixes: e.mixes })))
 		if (unlinkedSends === (this.config.unlinkedSends ?? '[]')) return
 		this.config = { ...this.config, unlinkedSends }
 		try {

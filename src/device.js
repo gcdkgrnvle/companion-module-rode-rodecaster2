@@ -486,15 +486,28 @@ export class RodecasterDevice extends EventEmitter {
 	}
 
 	async repairOnStart() {
-		const pending = this.pendingRepair
-		this.pendingRepair = []
+		// Keep entries journaled while writes are in flight or fail. Successful
+		// sends are skipped by relinkSends when a partial repair is retried.
+		const pending = [...this.pendingRepair]
 		// After a resync (layout change) the borrowed map survives; re-apply nothing.
 		if (this.borrowedBeforeResync) {
 			this.borrowedBeforeResync = null
 		}
 		for (const entry of pending) {
 			try {
+				// A send repaired on an earlier attempt may have been borrowed again.
+				// Defer that entry until it can be repaired without taking active control.
+				if (
+					[...this.borrowed.values()].some(
+						(e) => e.source === entry.source && e.mixes.some((mix) => entry.mixes.includes(mix)),
+					)
+				)
+					continue
+				if (entry.mixes.some((mix) => !this.layout.mixCellPath(entry.source, mix))) {
+					throw new Error('send is absent from the current layout')
+				}
 				await this.relinkSends(entry.source, entry.mixes)
+				this.pendingRepair = this.pendingRepair.filter((e) => e !== entry)
 				this.log('info', `relinked sends of source ${entry.source} left borrowed by a previous run`)
 			} catch (err) {
 				this.log('warn', `could not relink source ${entry.source}: ${err.message}`)
