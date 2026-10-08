@@ -19,6 +19,7 @@ export function updateVariableDefinitions(self) {
 		connected: { name: 'Desk connected (true/false)' },
 		model: { name: 'Desk model' },
 		firmware: { name: 'Desk firmware version' },
+		routing_preset: { name: 'Matching routing preset name (empty when none)' },
 		monitor_level_pct: { name: 'Monitor level (%)' },
 		monitor_level_db: { name: 'Monitor level (dB, approximate)' },
 		monitor_muted: { name: 'Monitor muted (true/false)' },
@@ -60,13 +61,16 @@ export function updateVariableDefinitions(self) {
 
 /**
  * @param {import('./main.js').RodecasterInstance} self
- * @param {'strips' | 'monitor' | 'recorder' | 'pads' | 'fx' | 'gui' | 'system' | 'all'} area
+ * @param {'strips' | 'monitor' | 'recorder' | 'pads' | 'fx' | 'gui' | 'system' | 'routing' | 'all'} area
  */
 export function updateVariableValues(self, area) {
 	const dev = self.device
 	/** @type {Record<string, any>} */
 	const v = {}
 	const all = area === 'all'
+	if (all || ['strips', 'monitor', 'system', 'routing'].includes(area)) {
+		v.routing_preset = dev.ready ? (self.routing?.matchingPreset() ?? '') : ''
+	}
 	if (all || area === 'system') {
 		v.connected = dev.ready
 		v.model = dev.ready ? dev.capabilities.model : ''

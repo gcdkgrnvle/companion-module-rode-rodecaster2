@@ -12,6 +12,8 @@ export function updateActions(self) {
 		{ id: -1, label: 'Current bank' },
 		...Array.from({ length: 8 }, (_, i) => ({ id: i, label: `Bank ${i + 1}` })),
 	]
+	const routingChoices = (self.routing?.listPresets() ?? []).map((preset) => ({ id: preset.id, label: preset.name }))
+	if (routingChoices.length === 0) routingChoices.push({ id: '', label: 'Save a preset on the routing page first' })
 	const fxSlots = Array.from({ length: Math.max(dev.fxSlotCount, 4) }, (_, i) => ({
 		id: i,
 		label: i < strips.length ? `Slot ${i + 1} (${strips[i].name})` : `Slot ${i + 1}`,
@@ -49,6 +51,14 @@ export function updateActions(self) {
 	let headphoneMuteQueue = Promise.resolve()
 
 	self.setActionDefinitions({
+		routing_load_preset: {
+			name: 'Routing: load preset',
+			description: 'Apply a routing preset saved on the routing page.',
+			options: [
+				{ id: 'preset', type: 'dropdown', label: 'Preset', default: routingChoices[0].id, choices: routingChoices },
+			],
+			callback: guard('routing load preset', async (e) => self.routing.loadPreset(String(e.options.preset))),
+		},
 		strip_mute: {
 			name: 'Channel: Mute',
 			options: [stripField, modeField],

@@ -22,6 +22,45 @@ move a fader or press a mute on the desk and the buttons follow.
    kernel reading at all times, so stopping Companion can never freeze the desk. Without it,
    replug the USB cable if the desk ever stops responding after Companion was stopped.
 
+### Routing page
+
+Open [http://127.0.0.1:8000/instance/rodecaster2/](http://127.0.0.1:8000/instance/rodecaster2/)
+on the computer running Companion. Replace `rodecaster2` with this connection's label when
+different. The page uses Companion's existing web server and works without internet access.
+
+- **Desk view:** use the output arrows to select headphones, Monitor, Recording, Bluetooth,
+  USB or CallMe. Only sources assigned to faders appear, once each; empty faders are skipped.
+  **Main Mix** and **Mix-minus** show read-only columns. Choose **Custom** to edit them.
+  Mix-minus is offered only for Bluetooth, USB 1, USB 1 Chat and USB 2. CallMe outputs have no
+  mode tabs on firmware 1.7.3 and remain read-only.
+- Drag a slider, use the mouse wheel, or focus it and use the arrow keys to change its level.
+  Wheel and arrow steps are 1%. The white handle is the send level, the thin grey marker is
+  its fader anchor, and the blue bar shows their difference. Linked sends can have an offset
+  too. Pressing the bottom button cycles **white chain → orange broken chain → red X → white
+  chain** (linked → unlinked → off → linked). Linking again snaps the level back to its anchor.
+- **Overview:** outputs are columns and assigned sources are rows. Each cell shows its state
+  and level percentage. Click a cell to cycle its state while that output is Custom; click an
+  output heading to open it in Desk view.
+- Changes are sent immediately. The page follows changes made on the desk about every 300 ms
+  without moving a slider during a drag. **Desk disconnected** disables editing until the
+  connection returns. Routing edits do not require the channel-level-control option below.
+- **Save as…** captures every source on every output, including sources not assigned to a
+  fader. **Load** applies the differences, **Rename** keeps existing button references working,
+  and **Delete** asks for confirmation. Saved routing presets stay in this connection's
+  settings across Companion restarts. They store output modes, link/unlink/off states and
+  levels; they do not store fader assignments, anchors or separate mute controls.
+- For a Stream Deck button, drag a saved setup from Companion's **Routing** presets, or add
+  **Routing: load preset** and choose its name. **Routing preset active** feedback turns the
+  template green when all modes, states and levels match (within half a percentage point for
+  levels). `$(rodecaster2:routing_preset)` gives the matching name, or empty if none matches or
+  the desk is disconnected. If several saved setups match, the first saved one supplies the
+  variable name.
+
+The cell-state sequences and the desk-screen response were verified on Tony's Pro II running
+firmware 1.7.3. Host level writes were verified on an unlinked send; the desk itself also writes
+offsets on linked sends. Output mode values are proven reads, but **host output-mode writes
+still need separate hardware testing**. No hardware testing was performed for this page.
+
 ### Channel level control
 
 Ships switched off. The desk has no writable fader level; to move a level this module must
@@ -69,3 +108,6 @@ connection config to rename them. Levels are shown as percent and as an approxim
 
 `headphone1_muted` through `headphone4_muted` show whether every enabled send into each
 headphone mix is muted. They follow changes made by Companion and on the desk.
+
+`routing_preset` contains the name of a saved setup matching the current routing, or empty
+when no setup matches or the desk is disconnected.

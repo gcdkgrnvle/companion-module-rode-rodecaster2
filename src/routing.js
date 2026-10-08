@@ -13,6 +13,19 @@ import { parseMixLevel, formatMixLevel, clamp01 } from './model.js'
 
 export const MODES = ['main', 'mixminus', 'custom']
 
+export function routingError(message, statusCode = 400) {
+	return Object.assign(new Error(message), { statusCode })
+}
+
+export function requireRoutingReady(dev) {
+	if (!dev.ready) throw routingError('desk disconnected', 503)
+}
+
+function validateIndex(value, count, name) {
+	if (!Number.isInteger(value) || value < 0 || value >= count)
+		throw routingError(`${name} must be an integer from 0 to ${count - 1}`)
+}
+
 /** @param {import('./device.js').RodecasterDevice} dev @param {number} output */
 export function mixMinusPath(dev, output) {
 	if (!dev.ready) return null
@@ -52,22 +65,28 @@ export function routingState(dev) {
 
 /** @param {import('./device.js').RodecasterDevice} dev */
 function cellPath(dev, source, output) {
-	const p = dev.ready ? dev.layout.mixCellPath(source, output) : null
-	if (!p) throw new Error(`no mix cell for source ${source} output ${output}`)
+	requireRoutingReady(dev)
+	validateIndex(source, dev.layout.sourceCount, 'source')
+	validateIndex(output, dev.layout.mixCountPerSource, 'output')
+	const p = dev.layout.mixCellPath(source, output)
+	if (!p) throw routingError(`no mix cell for source ${source} output ${output}`)
 	return p
 }
 
 /** @param {import('./device.js').RodecasterDevice} dev @param {number} output @param {number} mode */
 export async function setMode(dev, output, mode) {
-	if (![0, 1, 2].includes(mode)) throw new Error('mode must be 0, 1 or 2')
+	requireRoutingReady(dev)
+	validateIndex(output, dev.layout.mixCountPerSource, 'output')
+	if (![0, 1, 2].includes(mode)) throw routingError('mode must be 0, 1 or 2')
 	const p = mixMinusPath(dev, output)
-	if (!p) throw new Error(`no MIXMINUSES node for output ${output}`)
+	if (!p) throw routingError(`no MIXMINUSES node for output ${output}`)
 	await dev.write(p, 'outputMixMinus', V.int(mode))
 	dev.emit('update', 'monitor')
 }
 
 /** @param {import('./device.js').RodecasterDevice} dev @param {number} source @param {number} output @param {'link'|'unlink'|'off'} state */
 export async function setCellState(dev, source, output, state) {
+	if (!['link', 'unlink', 'off'].includes(state)) throw routingError('state must be link, unlink or off')
 	const p = cellPath(dev, source, output)
 	if (state === 'off') {
 		await dev.write(p, 'mixDisabled', V.bool(true))
@@ -86,6 +105,8 @@ export async function setCellState(dev, source, output, state) {
 
 /** @param {import('./device.js').RodecasterDevice} dev @param {number} source @param {number} output @param {number} level 0..1 */
 export async function setCellLevel(dev, source, output, level) {
+	if (typeof level !== 'number' || !Number.isFinite(level) || level < 0 || level > 1)
+		throw routingError('level must be a number from 0 to 1')
 	const p = cellPath(dev, source, output)
 	const cur = parseMixLevel(dev.propString(p, 'mixLevelWithAnchor')) ?? { level: 0, anchor: 0 }
 	await dev.write(p, 'mixLevelWithAnchor', V.string(formatMixLevel(clamp01(level), cur.anchor)))

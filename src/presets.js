@@ -22,6 +22,26 @@ export function updatePresets(self) {
 	/** @type {Array<{ id: string, name: string, definitions: string[] }>} */
 	const sections = []
 
+	const routingIds = []
+	for (const preset of self.routing?.listPresets() ?? []) {
+		const id = `routing_${preset.id}`
+		presets[id] = {
+			type: 'simple',
+			name: preset.name,
+			style: style(`ROUTING\\n${preset.name}`),
+			steps: [{ down: [{ actionId: 'routing_load_preset', options: { preset: preset.id } }], up: [] }],
+			feedbacks: [
+				{
+					feedbackId: 'routing_preset_active',
+					options: { preset: preset.id },
+					style: { bgcolor: GREEN, color: WHITE },
+				},
+			],
+		}
+		routingIds.push(id)
+	}
+	if (routingIds.length) sections.push({ id: 'routing', name: 'Routing', definitions: routingIds })
+
 	const stripIds = []
 	for (const s of strips) {
 		if (!s.source) continue

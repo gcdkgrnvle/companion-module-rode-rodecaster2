@@ -29,8 +29,19 @@ export function updateFeedbacks(self) {
 		{ id: -1, label: 'Current bank' },
 		...Array.from({ length: 8 }, (_, i) => ({ id: i, label: `Bank ${i + 1}` })),
 	]
+	const routingChoices = (self.routing?.listPresets() ?? []).map((preset) => ({ id: preset.id, label: preset.name }))
+	if (routingChoices.length === 0) routingChoices.push({ id: '', label: 'Save a preset on the routing page first' })
 
 	self.setFeedbackDefinitions({
+		routing_preset_active: {
+			type: 'boolean',
+			name: 'Routing preset active',
+			defaultStyle: { bgcolor: GREEN, color: WHITE },
+			options: [
+				{ id: 'preset', type: 'dropdown', label: 'Preset', default: routingChoices[0].id, choices: routingChoices },
+			],
+			callback: (f) => Boolean(dev.ready && self.routing?.presetMatches(String(f.options.preset))),
+		},
 		strip_muted: {
 			type: 'boolean',
 			name: 'Channel is muted',

@@ -1,0 +1,1344 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<meta name="color-scheme" content="dark" />
+		<title>RØDECaster · Routing</title>
+		<style>
+			:root {
+				font-family:
+					system-ui,
+					-apple-system,
+					BlinkMacSystemFont,
+					'Segoe UI',
+					sans-serif;
+				color: #f4f5f7;
+				background: #101114;
+				font-synthesis: none;
+				--muted: #a2a6b1;
+				--blue: #55aaff;
+				--orange: #ffb25a;
+				--red: #ff6874;
+			}
+			* {
+				box-sizing: border-box;
+			}
+			body {
+				margin: 0;
+			}
+			button,
+			select,
+			input {
+				font: inherit;
+			}
+			button,
+			select,
+			input {
+				color: inherit;
+				background: #25272e;
+				border: 1px solid #3a3d47;
+				border-radius: 9px;
+				padding: 10px 14px;
+			}
+			button {
+				cursor: pointer;
+			}
+			button:hover:not(:disabled) {
+				background: #363943;
+			}
+			button:disabled,
+			select:disabled {
+				opacity: 0.4;
+				cursor: default;
+			}
+			:focus-visible {
+				outline: 2px solid var(--blue);
+				outline-offset: 4px;
+			}
+			[hidden] {
+				display: none !important;
+			}
+			svg {
+				width: 24px;
+				height: 24px;
+				flex-shrink: 0;
+			}
+			.app {
+				max-width: 1500px;
+				margin: auto;
+				padding: 30px 32px 24px;
+			}
+			.masthead,
+			.toolbar,
+			.desk-header,
+			.output-picker,
+			.view-switch,
+			.preset-controls,
+			.legend {
+				display: flex;
+				align-items: center;
+			}
+			.masthead {
+				justify-content: space-between;
+				gap: 20px;
+				margin-bottom: 30px;
+			}
+			.brand {
+				font-size: 15px;
+				font-weight: 750;
+				letter-spacing: 0.16em;
+			}
+			.eyebrow {
+				color: var(--muted);
+				font-size: 11px;
+				letter-spacing: 0.17em;
+				text-transform: uppercase;
+				margin-top: 6px;
+			}
+			.connection {
+				color: var(--muted);
+				font-size: 13px;
+				display: flex;
+				align-items: center;
+				gap: 9px;
+			}
+			.connection::before {
+				content: '';
+				width: 7px;
+				height: 7px;
+				border-radius: 50%;
+				background: #858a99;
+			}
+			.connection.connected::before {
+				background: #77d5a2;
+				box-shadow: 0 0 10px #77d5a225;
+			}
+			.connection.disconnected {
+				color: var(--red);
+			}
+			.connection.disconnected::before {
+				background: var(--red);
+			}
+			.toolbar {
+				justify-content: space-between;
+				flex-wrap: wrap;
+				gap: 16px;
+				margin-bottom: 20px;
+			}
+			h1 {
+				margin: 0;
+				font-size: 27px;
+				font-weight: 600;
+				letter-spacing: -0.03em;
+			}
+			.view-switch {
+				gap: 4px;
+				padding: 4px;
+				border: 1px solid #30323a;
+				border-radius: 11px;
+			}
+			.view-switch button {
+				padding: 8px 17px;
+				border: none;
+				background: transparent;
+				font-size: 13px;
+				color: var(--muted);
+			}
+			.view-switch button[aria-pressed='true'] {
+				background: #343740;
+				color: white;
+			}
+			.notice {
+				padding: 13px 17px;
+				border-radius: 10px;
+				font-size: 13px;
+				line-height: 1.5;
+				margin-bottom: 16px;
+			}
+			#disconnected {
+				background: #39242a;
+				border: 1px solid #69353e;
+			}
+			#message {
+				background: #202d3b;
+				border: 1px solid #354c64;
+			}
+			#message.error {
+				background: #39242a;
+				border-color: #69353e;
+			}
+			.desk {
+				border: 1px solid #30323a;
+				border-radius: 20px;
+				background: #191b20;
+				overflow: hidden;
+			}
+			.desk-header {
+				justify-content: space-between;
+				gap: 12px;
+				padding: 22px 24px 16px;
+			}
+			.icon-button {
+				padding: 9px;
+				display: inline-flex;
+				align-items: center;
+				justify-content: center;
+			}
+			.desk-header > .icon-button {
+				background: transparent;
+				border-color: transparent;
+				color: var(--muted);
+			}
+			.output-picker {
+				gap: 20px;
+			}
+			.output-picker > .icon-button {
+				background: transparent;
+				border: 0;
+			}
+			.output-heading {
+				display: flex;
+				align-items: center;
+				gap: 12px;
+				justify-content: center;
+				min-width: 190px;
+			}
+			.output-heading svg {
+				width: 29px;
+				height: 29px;
+			}
+			h2 {
+				margin: 0;
+				font-size: 19px;
+				font-weight: 550;
+			}
+			.output-count {
+				color: var(--muted);
+				font-size: 11px;
+				margin-top: 3px;
+			}
+			.mode-tabs {
+				display: flex;
+				justify-content: center;
+				gap: 4px;
+				margin: 2px auto 12px;
+			}
+			.mode-tabs button {
+				min-width: 112px;
+				border: 0;
+				border-bottom: 2px solid transparent;
+				border-radius: 7px 7px 0 0;
+				background: transparent;
+				color: var(--muted);
+				padding: 11px 16px;
+				font-size: 13px;
+			}
+			.mode-tabs button[aria-pressed='true'] {
+				color: white;
+				border-bottom-color: var(--blue);
+				background: #24272d;
+			}
+			.mode-note {
+				min-height: 19px;
+				text-align: center;
+				color: var(--muted);
+				font-size: 12px;
+				padding: 0 20px;
+				margin: 0 0 20px;
+			}
+			.faders {
+				display: flex;
+				justify-content: safe center;
+				gap: 12px;
+				padding: 0 24px 26px;
+				overflow-x: auto;
+			}
+			.fader-column {
+				flex: 1 0 92px;
+				max-width: 145px;
+				min-width: 92px;
+				border-radius: 13px;
+				background: #2a2c32;
+				padding: 15px 10px 10px;
+				transition: background 120ms;
+			}
+			.fader-column.readonly {
+				background: #23252a;
+			}
+			.fader-column.readonly .fader-body {
+				opacity: 0.38;
+			}
+			.fader-column.off .fader-body {
+				opacity: 0.3;
+			}
+			.level-value {
+				text-align: center;
+				font-size: 15px;
+				font-variant-numeric: tabular-nums;
+			}
+			.level-value small {
+				font-size: 10px;
+				color: var(--muted);
+				padding-left: 2px;
+			}
+			.fader-track {
+				position: relative;
+				height: 236px;
+				margin: 22px auto 19px;
+				width: 52px;
+				touch-action: none;
+				cursor: ns-resize;
+			}
+			.fader-track[aria-disabled='true'] {
+				cursor: default;
+			}
+			.track-line {
+				position: absolute;
+				top: 0;
+				bottom: 0;
+				width: 5px;
+				left: calc(50% - 2.5px);
+				background: #111216;
+				border-radius: 5px;
+			}
+			.track-ticks {
+				position: absolute;
+				top: 0;
+				bottom: 0;
+				left: 0;
+				right: 0;
+				background: repeating-linear-gradient(to top, #ffffff12 0 1px, transparent 1px 23.6px);
+				mask-image: linear-gradient(to right, #000 0 7px, transparent 7px 45px, #000 45px);
+			}
+			.offset-bar {
+				position: absolute;
+				width: 5px;
+				left: calc(50% - 2.5px);
+				background: var(--blue);
+				border-radius: 4px;
+			}
+			.anchor-marker {
+				position: absolute;
+				width: 32px;
+				height: 2px;
+				left: 10px;
+				background: #9da0a9;
+				transform: translateY(50%);
+			}
+			.level-handle {
+				position: absolute;
+				width: 42px;
+				height: 10px;
+				left: 5px;
+				background: #f4f5f8;
+				border-radius: 3px;
+				transform: translateY(50%);
+				box-shadow: 0 2px 5px #0008;
+			}
+			.source-label {
+				min-height: 57px;
+				display: flex;
+				flex-direction: column;
+				align-items: center;
+				gap: 9px;
+				font-size: 12px;
+				text-align: center;
+				line-height: 1.2;
+			}
+			.source-label svg {
+				width: 23px;
+				height: 23px;
+			}
+			.link-button {
+				display: flex;
+				justify-content: center;
+				align-items: center;
+				width: 100%;
+				margin-top: 14px;
+				background: #191b20;
+				border-color: transparent;
+				height: 45px;
+			}
+			.state-link {
+				color: #f4f5f7;
+			}
+			.state-unlink {
+				color: var(--orange);
+			}
+			.state-off {
+				color: var(--red);
+			}
+			.legend {
+				gap: 20px;
+				flex-wrap: wrap;
+				margin: 19px 2px 24px;
+				color: var(--muted);
+				font-size: 12px;
+			}
+			.legend span {
+				display: inline-flex;
+				align-items: center;
+				gap: 7px;
+			}
+			.legend svg {
+				width: 17px;
+				height: 17px;
+			}
+			.legend .hint {
+				margin-left: auto;
+			}
+			.overview {
+				overflow: auto;
+				border: 1px solid #30323a;
+				border-radius: 16px;
+				max-height: 650px;
+			}
+			table {
+				border-collapse: separate;
+				border-spacing: 0;
+				width: 100%;
+				font-size: 12px;
+			}
+			th,
+			td {
+				border-right: 1px solid #30323a;
+				border-bottom: 1px solid #30323a;
+				padding: 7px;
+				text-align: center;
+				min-width: 88px;
+			}
+			th {
+				background: #24262d;
+				font-weight: 500;
+			}
+			thead th {
+				position: sticky;
+				top: 0;
+				z-index: 2;
+			}
+			th:first-child {
+				position: sticky;
+				left: 0;
+				z-index: 1;
+				min-width: 125px;
+				text-align: left;
+				padding-left: 16px;
+			}
+			thead th:first-child {
+				z-index: 3;
+			}
+			tr:last-child > * {
+				border-bottom: 0;
+			}
+			tr > :last-child {
+				border-right: 0;
+			}
+			.output-cell {
+				width: 100%;
+				padding: 9px 2px;
+				background: transparent;
+				border: 0;
+				line-height: 1.3;
+			}
+			.output-cell small {
+				display: block;
+				font-size: 10px;
+				color: var(--muted);
+				margin-top: 7px;
+			}
+			.matrix-cell {
+				display: flex;
+				gap: 8px;
+				align-items: center;
+				justify-content: center;
+				width: 100%;
+				border: 0;
+				background: #24262d;
+				padding: 11px 4px;
+				font-variant-numeric: tabular-nums;
+			}
+			.matrix-cell svg {
+				width: 18px;
+				height: 18px;
+			}
+			.presets {
+				border-top: 1px solid #30323a;
+				padding-top: 23px;
+				margin-top: 24px;
+			}
+			.preset-heading {
+				display: flex;
+				align-items: baseline;
+				flex-wrap: wrap;
+				gap: 14px;
+				margin-bottom: 14px;
+			}
+			.preset-heading h2 {
+				font-size: 15px;
+			}
+			#active-preset {
+				color: var(--muted);
+				font-size: 12px;
+			}
+			.preset-controls {
+				flex-wrap: wrap;
+				gap: 8px;
+			}
+			.preset-controls select {
+				min-width: 220px;
+				max-width: 100%;
+				margin-right: 2px;
+			}
+			.preset-controls button {
+				font-size: 13px;
+			}
+			.primary {
+				background: #dfeafa;
+				color: #162237;
+				border-color: #dfeafa;
+				font-weight: 600;
+			}
+			.primary:hover:not(:disabled) {
+				background: white;
+			}
+			.danger {
+				color: #ffa5ad;
+			}
+			.preset-note,
+			.empty {
+				color: var(--muted);
+				font-size: 12px;
+				line-height: 1.5;
+			}
+			.empty {
+				text-align: center;
+				padding: 70px 20px;
+				width: 100%;
+			}
+			dialog {
+				color: inherit;
+				background: #202228;
+				border: 1px solid #454852;
+				border-radius: 16px;
+				width: min(430px, calc(100% - 32px));
+				padding: 26px;
+			}
+			dialog::backdrop {
+				background: #0009;
+			}
+			dialog h2 {
+				margin-bottom: 20px;
+			}
+			dialog label {
+				font-size: 13px;
+				color: var(--muted);
+			}
+			dialog input {
+				width: 100%;
+				margin: 8px 0 24px;
+			}
+			.dialog-actions {
+				display: flex;
+				justify-content: flex-end;
+				gap: 8px;
+			}
+			@media (max-width: 650px) {
+				.app {
+					padding: 22px 14px;
+				}
+				.masthead {
+					margin-bottom: 25px;
+				}
+				.brand {
+					font-size: 12px;
+				}
+				.connection {
+					font-size: 11px;
+				}
+				.desk-header {
+					padding: 15px 8px;
+				}
+				.output-picker {
+					gap: 2px;
+				}
+				.output-heading {
+					min-width: 156px;
+					gap: 8px;
+				}
+				h2 {
+					font-size: 16px;
+				}
+				.faders {
+					padding: 0 14px 20px;
+					gap: 9px;
+				}
+				.mode-tabs button {
+					min-width: 95px;
+				}
+				.legend .hint {
+					margin-left: 0;
+					width: 100%;
+				}
+				.preset-controls select {
+					width: 100%;
+				}
+			}
+		</style>
+	</head>
+	<body>
+		<main class="app">
+			<header class="masthead">
+				<div>
+					<div class="brand">RØDECASTER</div>
+					<div class="eyebrow">Companion · Routing</div>
+				</div>
+				<div id="connection" class="connection" role="status">Connecting to desk…</div>
+			</header>
+			<div class="toolbar">
+				<h1>Audio routing</h1>
+				<nav class="view-switch" aria-label="Routing view">
+					<button id="desk-view" type="button" aria-pressed="true">Desk view</button>
+					<button id="overview-view" type="button" aria-pressed="false">Overview</button>
+				</nav>
+			</div>
+			<div id="disconnected" class="notice" role="status" hidden>
+				Desk disconnected. Connect the RØDECaster in Companion to change routing. Reconnecting automatically.
+			</div>
+			<div id="message" class="notice" role="status" hidden></div>
+			<section id="desk" class="desk" aria-label="Output routing">
+				<header class="desk-header">
+					<button
+						id="back"
+						type="button"
+						class="icon-button"
+						title="Routing overview"
+						aria-label="Routing overview"
+					></button>
+					<div class="output-picker">
+						<button
+							id="previous-output"
+							type="button"
+							class="icon-button"
+							title="Previous output"
+							aria-label="Previous output"
+						></button>
+						<div class="output-heading">
+							<span id="output-icon"></span>
+							<div>
+								<h2 id="output-name">Headphone 1</h2>
+								<div id="output-count" class="output-count">Output 1 of 13</div>
+							</div>
+						</div>
+						<button
+							id="next-output"
+							type="button"
+							class="icon-button"
+							title="Next output"
+							aria-label="Next output"
+						></button>
+					</div>
+					<button
+						id="home"
+						type="button"
+						class="icon-button"
+						title="Routing overview"
+						aria-label="Routing overview"
+					></button>
+				</header>
+				<div id="mode-tabs" class="mode-tabs" role="group" aria-label="Output mode">
+					<button type="button" data-mode="0" aria-pressed="false">Main Mix</button>
+					<button type="button" data-mode="1" aria-pressed="false">Mix-minus</button>
+					<button type="button" data-mode="2" aria-pressed="false">Custom</button>
+				</div>
+				<p id="mode-note" class="mode-note">Waiting for routing…</p>
+				<div id="faders" class="faders"><div class="empty">Waiting for the desk’s routing settings…</div></div>
+			</section>
+			<section id="overview" class="overview" aria-label="Routing overview" hidden></section>
+			<div class="legend" aria-label="Routing legend">
+				<span id="legend-link"></span><span id="legend-unlink"></span><span id="legend-off"></span>
+				<span class="hint">Drag a fader · Scroll or arrow keys for 1% steps</span>
+			</div>
+			<section class="presets" aria-label="Saved routing presets">
+				<div class="preset-heading">
+					<h2>Routing presets</h2>
+					<span id="active-preset">No matching preset</span>
+				</div>
+				<div class="preset-controls">
+					<select id="preset-list" aria-label="Saved routing preset" disabled>
+						<option value="">No saved presets</option>
+					</select>
+					<button id="load-preset" class="primary" type="button" disabled>Load</button>
+					<button id="save-preset" type="button" disabled>Save as…</button>
+					<button id="rename-preset" type="button" disabled>Rename</button>
+					<button id="delete-preset" class="danger" type="button" disabled>Delete</button>
+				</div>
+				<p class="preset-note">
+					Presets save every source and output, including sources not currently assigned to a fader.
+				</p>
+			</section>
+		</main>
+		<dialog id="name-dialog" aria-labelledby="dialog-title">
+			<form id="name-form">
+				<h2 id="dialog-title">Save routing preset</h2>
+				<p id="dialog-error" class="notice error" role="alert" hidden></p>
+				<label for="preset-name">Preset name</label>
+				<input id="preset-name" name="name" type="text" required maxlength="80" autocomplete="off" />
+				<div class="dialog-actions">
+					<button id="cancel-name" type="button">Cancel</button
+					><button id="submit-name" class="primary" type="submit">Save</button>
+				</div>
+			</form>
+		</dialog>
+		<script>
+			'use strict'
+
+			// Protocol order: src/protocol/names.js (labels match the desk).
+			const sources = [
+				'Mic 1',
+				'Mic 2',
+				'Mic 3',
+				'Mic 4',
+				'Combo 1+2',
+				'Combo 2+3',
+				'Combo 3+4',
+				'USB 1',
+				'USB 1 Chat',
+				'USB 2',
+				'Bluetooth',
+				'Pads',
+				'Game',
+				'Music',
+				'Virtual A',
+				'Virtual B',
+				'CallMe 1',
+				'CallMe 2',
+				'CallMe 3',
+			]
+			const outputs = [
+				'Headphone 1',
+				'Headphone 2',
+				'Headphone 3',
+				'Headphone 4',
+				'Monitor',
+				'Recording',
+				'Bluetooth',
+				'USB 1',
+				'USB 1 Chat',
+				'USB 2',
+				'CallMe 1',
+				'CallMe 2',
+				'CallMe 3',
+			]
+			const modes = ['Main Mix', 'Mix-minus', 'Custom']
+			const paths = {
+				link: '<path d="m10 13 4-4m-6 7-1 1a4 4 0 0 1-6-6l4-4a4 4 0 0 1 6 0m2 10a4 4 0 0 0 6 0l4-4a4 4 0 0 0-6-6l-1 1"/>',
+				unlink:
+					'<path d="m8 16-1 1a4 4 0 0 1-6-6l4-4a4 4 0 0 1 5-1m4 12a4 4 0 0 0 5-1l4-4a4 4 0 0 0-6-6l-1 1M9 2l1 3m4 14 1 3M2 3l20 18"/>',
+				off: '<path d="m6 6 12 12M6 18 18 6"/>',
+				left: '<path d="m15 5-7 7 7 7"/>',
+				right: '<path d="m9 5 7 7-7 7"/>',
+				back: '<path d="M20 12H4m7-7-7 7 7 7"/>',
+				home: '<path d="m3 10 9-7 9 7v10H3Zm6 10v-7h6v7"/>',
+				headphones:
+					'<path d="M4 14V11a8 8 0 0 1 16 0v3"/><rect x="3" y="12" width="5" height="9" rx="2"/><rect x="16" y="12" width="5" height="9" rx="2"/>',
+				mic: '<rect x="9" y="2" width="6" height="13" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-4 0h8"/>',
+				usb: '<path d="M12 22V3m-3 3 3-3 3 3M12 17l-6-4V9m6 4 6-4V5"/><circle cx="6" cy="7" r="2"/><rect x="16" y="2" width="4" height="4"/>',
+				bluetooth: '<path d="m7 6 10 12-5 4V2l5 4L7 18"/>',
+				pads: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
+				music:
+					'<path d="M9 18V5l11-3v13M9 8l11-3"/><ellipse cx="6" cy="18" rx="3" ry="3"/><ellipse cx="17" cy="15" rx="3" ry="3"/>',
+				game: '<path d="M7 6h10c4 0 6 13 3 14-2 1-4-4-6-4h-4c-2 0-4 5-6 4C1 19 3 6 7 6Z M5 10h6m-3-3v6m9-3h.01m2 3h.01"/>',
+				phone: '<path d="m4 3 5 1 1 5-3 2a17 17 0 0 0 6 6l2-3 5 1 1 5c-9 4-21-8-17-17Z"/>',
+				monitor:
+					'<rect x="3" y="2" width="18" height="20" rx="2"/><circle cx="12" cy="15" r="4"/><circle cx="12" cy="6" r="1"/>',
+				record: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/>',
+				virtual: '<path d="M3 12h3l3-8 6 16 3-8h3"/>',
+			}
+			const icon = (name) =>
+				`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name] || paths.virtual}</svg>`
+			const $ = (id) => document.getElementById(id)
+			const sourceIcon = (source) =>
+				source < 7
+					? 'mic'
+					: source < 10
+						? 'usb'
+						: source === 10
+							? 'bluetooth'
+							: source === 11
+								? 'pads'
+								: source === 12
+									? 'game'
+									: source === 13
+										? 'music'
+										: source < 16
+											? 'virtual'
+											: 'phone'
+			const outputIcon = (output) =>
+				output < 4
+					? 'headphones'
+					: output === 4
+						? 'monitor'
+						: output === 5
+							? 'record'
+							: output === 6
+								? 'bluetooth'
+								: output < 10
+									? 'usb'
+									: 'phone'
+			const cellState = (cell) => (cell.disabled ? 'off' : cell.link ? 'link' : 'unlink')
+			const stateLabels = { link: 'Linked', unlink: 'Unlinked', off: 'Off' }
+			const nextStates = { link: 'unlink', unlink: 'off', off: 'link' }
+			const clamp = (value) => Math.max(0, Math.min(1, Math.round(value * 100) / 100))
+			const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+			let routing = { ready: false, outputs: [], strips: [] }
+			let presetData = { presets: [], active: '' }
+			let currentOutput = 0
+			let connected = false
+			let busy = false
+			let epoch = 0
+			let mutations = 0
+			let mutationQueue = Promise.resolve()
+			let deskSignature = ''
+			let overviewSignature = ''
+			let presetSignature = ''
+			let nameMode = 'save'
+			let renamePreset = null
+			let messageTimer
+			const faderNodes = new Map()
+			const matrixNodes = new Map()
+			const levelWorkers = new Map()
+			const dragging = new Set()
+			const keyFor = (output, source) => `${output}:${source}`
+			const assignedSources = () => [
+				...new Set(
+					routing.strips
+						.map((strip) => strip.source)
+						.filter((source) => Number.isInteger(source) && source >= 0 && source < sources.length),
+				),
+			]
+			const getOutput = (output) => routing.outputs.find((entry) => entry.output === output)
+			const getCell = (output, source) => getOutput(output)?.cells.find((cell) => cell.source === source)
+			const editable = (output) => connected && !busy && getOutput(output)?.mode === 2
+
+			function message(text, error = false) {
+				clearTimeout(messageTimer)
+				$('message').textContent = text
+				$('message').classList.toggle('error', error)
+				$('message').hidden = false
+				if (error && $('name-dialog').open) {
+					$('dialog-error').textContent = text
+					$('dialog-error').hidden = false
+				}
+				if (!error)
+					messageTimer = setTimeout(() => {
+						$('message').hidden = true
+					}, 4500)
+			}
+
+			async function api(path, method = 'GET', body) {
+				const response = await fetch(path, {
+					method,
+					cache: 'no-store',
+					headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
+					body: body === undefined ? undefined : JSON.stringify(body),
+					signal: AbortSignal.timeout(15000),
+				})
+				const data = await response.json()
+				if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`)
+				return data
+			}
+
+			// All client mutations are ordered, including a preset load after the last drag value.
+			function mutate(operation) {
+				epoch++
+				mutations++
+				const result = mutationQueue.then(operation)
+				mutationQueue = result
+					.catch(() => {})
+					.finally(() => {
+						mutations--
+						epoch++
+					})
+				return result
+			}
+
+			function visibleLevel(output, source, cell) {
+				const worker = levelWorkers.get(keyFor(output, source))
+				return worker && (worker.running || dragging.has(keyFor(output, source)) || Date.now() < worker.holdUntil)
+					? worker.value
+					: cell.level
+			}
+
+			function queueLevel(output, source, value) {
+				const key = keyFor(output, source)
+				let worker = levelWorkers.get(key)
+				if (!worker) {
+					worker = { value, pending: null, lastSent: 0, running: null, holdUntil: 0 }
+					levelWorkers.set(key, worker)
+				}
+				worker.value = clamp(value)
+				worker.pending = worker.value
+				worker.holdUntil = Date.now() + 1500
+				if (!worker.running) {
+					worker.running = (async () => {
+						try {
+							while (worker.pending !== null) {
+								await mutate(async () => {
+									await delay(Math.max(0, 60 - (Date.now() - worker.lastSent)))
+									const level = worker.pending
+									worker.pending = null
+									worker.lastSent = Date.now()
+									await api('routing/cell', 'POST', { output, source, level })
+									// Space completed requests as well as starts, so network jitter cannot bunch writes.
+									worker.lastSent = Date.now()
+								})
+							}
+						} catch (error) {
+							worker.pending = null
+							worker.holdUntil = 0
+							message(error.message, true)
+						} finally {
+							worker.running = null
+							worker.holdUntil = Date.now() + 700
+							updateControls()
+						}
+					})()
+				}
+				updateCells()
+			}
+
+			async function finishLevels() {
+				await Promise.all([...levelWorkers.values()].map((worker) => worker.running))
+				await mutationQueue
+			}
+
+			async function cycleCell(output, source) {
+				if (!editable(output)) return
+				const cell = getCell(output, source)
+				if (!cell) return
+				const state = nextStates[cellState(cell)]
+				try {
+					busy = true
+					updateControls()
+					await finishLevels()
+					await mutate(() => api('routing/cell', 'POST', { output, source, state }))
+					cell.disabled = state === 'off'
+					cell.link = state === 'link'
+					if (state === 'link') cell.level = cell.anchor
+					levelWorkers.delete(keyFor(output, source))
+				} catch (error) {
+					message(error.message, true)
+				} finally {
+					busy = false
+					updateControls()
+					updateCells()
+				}
+			}
+
+			function createFader(source, output) {
+				const column = document.createElement('div')
+				column.className = 'fader-column'
+				column.innerHTML = `<div class="fader-body"><div class="level-value"><span></span><small>%</small></div><div class="fader-track" role="slider" tabindex="0" aria-orientation="vertical" aria-valuemin="0" aria-valuemax="100"><div class="track-ticks"></div><div class="track-line"></div><div class="offset-bar"></div><div class="anchor-marker"></div><div class="level-handle"></div></div><div class="source-label">${icon(sourceIcon(source))}<span></span></div></div><button type="button" class="link-button"></button>`
+				const track = column.querySelector('.fader-track')
+				track.setAttribute('aria-label', `${sources[source]} to ${outputs[output]} level`)
+				column.querySelector('.source-label span').textContent = sources[source]
+				const node = {
+					column,
+					track,
+					source,
+					output,
+					value: column.querySelector('.level-value span'),
+					bar: column.querySelector('.offset-bar'),
+					anchor: column.querySelector('.anchor-marker'),
+					handle: column.querySelector('.level-handle'),
+					button: column.querySelector('button'),
+				}
+				const key = keyFor(output, source)
+				const canSlide = () => editable(output) && getCell(output, source) && !getCell(output, source).disabled
+				const fromPointer = (event) => {
+					const rect = track.getBoundingClientRect()
+					queueLevel(output, source, (rect.bottom - event.clientY) / rect.height)
+				}
+				track.addEventListener('pointerdown', (event) => {
+					if (event.button !== 0 || !canSlide()) return
+					event.preventDefault()
+					track.focus()
+					dragging.add(key)
+					track.setPointerCapture(event.pointerId)
+					fromPointer(event)
+					updateControls()
+				})
+				track.addEventListener('pointermove', (event) => {
+					if (dragging.has(key) && track.hasPointerCapture(event.pointerId)) fromPointer(event)
+				})
+				const endDrag = (event) => {
+					if (!dragging.delete(key)) return
+					// Enqueue the release value even if the last move already sent it.
+					const worker = levelWorkers.get(key)
+					if (worker) queueLevel(output, source, worker.value)
+					if (track.hasPointerCapture(event.pointerId)) track.releasePointerCapture(event.pointerId)
+					updateControls()
+				}
+				track.addEventListener('pointerup', endDrag)
+				track.addEventListener('pointercancel', endDrag)
+				track.addEventListener('lostpointercapture', endDrag)
+				track.addEventListener(
+					'wheel',
+					(event) => {
+						if (!canSlide() || event.deltaY === 0) return
+						event.preventDefault()
+						queueLevel(
+							output,
+							source,
+							visibleLevel(output, source, getCell(output, source)) + (event.deltaY < 0 ? 0.01 : -0.01),
+						)
+					},
+					{ passive: false },
+				)
+				track.addEventListener('keydown', (event) => {
+					if (!canSlide()) return
+					const current = visibleLevel(output, source, getCell(output, source))
+					const values = {
+						ArrowUp: current + 0.01,
+						ArrowRight: current + 0.01,
+						ArrowDown: current - 0.01,
+						ArrowLeft: current - 0.01,
+						PageUp: current + 0.1,
+						PageDown: current - 0.1,
+						Home: 0,
+						End: 1,
+					}
+					if (!(event.key in values)) return
+					event.preventDefault()
+					queueLevel(output, source, values[event.key])
+				})
+				node.button.addEventListener('click', () => cycleCell(output, source))
+				faderNodes.set(source, node)
+				return column
+			}
+
+			function buildDesk(assigned) {
+				const signature = `${currentOutput}:${assigned.join(',')}`
+				if (signature === deskSignature || dragging.size) return
+				deskSignature = signature
+				faderNodes.clear()
+				$('faders').replaceChildren(...assigned.map((source) => createFader(source, currentOutput)))
+				if (!assigned.length) {
+					const empty = document.createElement('div')
+					empty.className = 'empty'
+					empty.textContent = 'No sources are assigned to faders on the desk.'
+					$('faders').append(empty)
+				}
+			}
+
+			function buildOverview(assigned) {
+				const signature = assigned.join(',')
+				if (signature === overviewSignature && $('overview').firstChild) return
+				overviewSignature = signature
+				matrixNodes.clear()
+				const table = document.createElement('table')
+				const head = table.createTHead().insertRow()
+				const corner = document.createElement('th')
+				corner.scope = 'col'
+				corner.textContent = 'Source / output'
+				head.append(corner)
+				outputs.forEach((label, output) => {
+					const th = document.createElement('th')
+					th.scope = 'col'
+					const button = document.createElement('button')
+					button.type = 'button'
+					button.className = 'output-cell'
+					button.textContent = label
+					button.append(document.createElement('small'))
+					button.addEventListener('click', () => {
+						if (dragging.size) return
+						currentOutput = output
+						showView('desk')
+						render()
+					})
+					th.append(button)
+					head.append(th)
+				})
+				const body = table.createTBody()
+				assigned.forEach((source) => {
+					const row = body.insertRow()
+					const label = document.createElement('th')
+					label.scope = 'row'
+					label.textContent = sources[source]
+					row.append(label)
+					outputs.forEach((_, output) => {
+						const button = document.createElement('button')
+						button.type = 'button'
+						button.className = 'matrix-cell'
+						button.addEventListener('click', () => cycleCell(output, source))
+						row.insertCell().append(button)
+						matrixNodes.set(keyFor(output, source), { button, source, output })
+					})
+				})
+				$('overview').replaceChildren(table)
+			}
+
+			function updateCells() {
+				for (const node of faderNodes.values()) {
+					const cell = getCell(node.output, node.source)
+					const state = cell ? cellState(cell) : 'off'
+					const level = cell ? visibleLevel(node.output, node.source, cell) : 0
+					const anchor = cell?.anchor ?? 0
+					const canEdit = editable(node.output) && !!cell
+					node.column.classList.toggle('readonly', !canEdit)
+					node.column.classList.toggle('off', state === 'off')
+					node.value.textContent = cell ? Math.round(level * 100) : '—'
+					node.track.setAttribute('aria-valuenow', Math.round(level * 100))
+					node.track.setAttribute(
+						'aria-valuetext',
+						`${Math.round(level * 100)} percent, fader anchor ${Math.round(anchor * 100)} percent`,
+					)
+					node.track.setAttribute('aria-disabled', !canEdit || state === 'off')
+					node.track.tabIndex = canEdit && state !== 'off' ? 0 : -1
+					node.handle.style.bottom = `${level * 100}%`
+					node.anchor.style.bottom = `${anchor * 100}%`
+					node.bar.style.bottom = `${Math.min(level, anchor) * 100}%`
+					node.bar.style.height = `${Math.abs(level - anchor) * 100}%`
+					node.button.className = `link-button state-${state}`
+					if (node.button.dataset.state !== state) {
+						node.button.innerHTML = icon(state)
+						node.button.dataset.state = state
+					}
+					node.button.disabled = !canEdit || dragging.size > 0
+					node.button.title = `${stateLabels[state]} · Click for ${stateLabels[nextStates[state]].toLowerCase()}`
+					node.button.setAttribute('aria-label', `${sources[node.source]}: ${node.button.title}`)
+				}
+				for (const { button, source, output } of matrixNodes.values()) {
+					const cell = getCell(output, source)
+					const state = cell ? cellState(cell) : 'off'
+					const level = cell ? Math.round(visibleLevel(output, source, cell) * 100) : null
+					const content = `${state}:${level}`
+					if (button.dataset.content !== content) {
+						button.innerHTML = `${icon(state)}<span>${level === null ? '—' : `${level}%`}</span>`
+						button.dataset.content = content
+					}
+					button.className = `matrix-cell state-${state}`
+					button.disabled = !editable(output) || !cell || dragging.size > 0
+					button.setAttribute(
+						'aria-label',
+						`${sources[source]} to ${outputs[output]}: ${stateLabels[state]}, ${level ?? 0} percent`,
+					)
+					button.title = `${stateLabels[state]}${editable(output) ? ` · Click for ${stateLabels[nextStates[state]].toLowerCase()}` : ' · Select Custom in Desk view to edit'}`
+				}
+			}
+
+			function updateControls() {
+				const output = getOutput(currentOutput)
+				const locked = !connected || busy || dragging.size > 0
+				$('mode-tabs').hidden = output?.mode == null
+				for (const button of $('mode-tabs').children) {
+					const mode = Number(button.dataset.mode)
+					button.hidden = mode === 1 && (currentOutput < 6 || currentOutput > 9)
+					button.disabled = locked
+					button.setAttribute('aria-pressed', output?.mode === mode)
+				}
+				$('mode-note').textContent = !connected
+					? 'Waiting for the desk to connect.'
+					: output?.mode == null
+						? 'This output does not expose a routing mode. Routing is read-only.'
+						: output.mode !== 2
+							? 'Select Custom to change this output’s routing.'
+							: 'Changes apply immediately. Linked sends can also have a level offset.'
+				for (const id of ['back', 'home', 'previous-output', 'next-output', 'desk-view', 'overview-view'])
+					$(id).disabled = dragging.size > 0
+				const selected = $('preset-list').value
+				$('preset-list').disabled = locked || !presetData.presets.length
+				$('save-preset').disabled = locked
+				for (const id of ['load-preset', 'rename-preset', 'delete-preset']) $(id).disabled = locked || !selected
+				updateCells()
+			}
+
+			function renderPresets() {
+				const signature = JSON.stringify(presetData.presets)
+				if (signature !== presetSignature) {
+					presetSignature = signature
+					const selected = $('preset-list').value
+					$('preset-list').replaceChildren()
+					if (!presetData.presets.length) $('preset-list').add(new Option('No saved presets', ''))
+					for (const preset of presetData.presets) $('preset-list').add(new Option(preset.name, preset.id))
+					if (presetData.presets.some((preset) => preset.id === selected)) $('preset-list').value = selected
+				}
+				$('active-preset').textContent = presetData.active ? `Active: ${presetData.active}` : 'No matching preset'
+			}
+
+			function render() {
+				const assigned = assignedSources()
+				buildDesk(assigned)
+				buildOverview(assigned)
+				$('output-name').textContent = outputs[currentOutput]
+				$('output-count').textContent = `Output ${currentOutput + 1} of ${outputs.length}`
+				$('output-icon').innerHTML = icon(outputIcon(currentOutput))
+				$('overview')
+					.querySelectorAll('.output-cell small')
+					.forEach((label, output) => {
+						label.textContent = modes[getOutput(output)?.mode] ?? 'Mode unavailable'
+					})
+				renderPresets()
+				updateControls()
+			}
+
+			function showView(view) {
+				if (dragging.size) return
+				$('desk').hidden = view !== 'desk'
+				$('overview').hidden = view !== 'overview'
+				$('desk-view').setAttribute('aria-pressed', view === 'desk')
+				$('overview-view').setAttribute('aria-pressed', view === 'overview')
+			}
+
+			function setConnection(ready) {
+				connected = ready
+				$('connection').textContent = ready ? 'Desk connected · Live' : 'Desk disconnected'
+				$('connection').className = `connection ${ready ? 'connected' : 'disconnected'}`
+				$('disconnected').hidden = ready
+				updateControls()
+			}
+
+			async function poll() {
+				const startEpoch = epoch
+				try {
+					const fresh = await api('routing')
+					setConnection(fresh.ready === true)
+					if (fresh.ready && startEpoch === epoch && mutations === 0) {
+						routing = fresh
+						for (const [key, worker] of levelWorkers) {
+							if (!worker.running && !dragging.has(key) && Date.now() >= worker.holdUntil) levelWorkers.delete(key)
+						}
+						render()
+					}
+					if (fresh.ready) {
+						const presets = await api('routing/presets')
+						if (startEpoch === epoch && mutations === 0) {
+							presetData = presets
+							renderPresets()
+							updateControls()
+						}
+					}
+				} catch {
+					setConnection(false)
+				} finally {
+					setTimeout(poll, 300)
+				}
+			}
+
+			async function presetOperation(operation, success) {
+				busy = true
+				updateControls()
+				try {
+					await finishLevels()
+					await mutate(operation)
+					levelWorkers.clear()
+					presetData = await api('routing/presets')
+					const fresh = await api('routing')
+					setConnection(fresh.ready === true)
+					if (fresh.ready) routing = fresh
+					render()
+					message(success)
+					return true
+				} catch (error) {
+					message(error.message, true)
+					return false
+				} finally {
+					busy = false
+					updateControls()
+				}
+			}
+
+			for (const [id, name] of [
+				['back', 'back'],
+				['home', 'home'],
+				['previous-output', 'left'],
+				['next-output', 'right'],
+			])
+				$(id).innerHTML = icon(name)
+			for (const state of ['link', 'unlink', 'off'])
+				$('legend-' + state).innerHTML = `<span class="state-${state}">${icon(state)}</span>${stateLabels[state]}`
+			$('desk-view').addEventListener('click', () => showView('desk'))
+			for (const id of ['overview-view', 'back', 'home']) $(id).addEventListener('click', () => showView('overview'))
+			$('previous-output').addEventListener('click', () => {
+				currentOutput = (currentOutput + outputs.length - 1) % outputs.length
+				render()
+			})
+			$('next-output').addEventListener('click', () => {
+				currentOutput = (currentOutput + 1) % outputs.length
+				render()
+			})
+			$('preset-list').addEventListener('change', updateControls)
+			for (const button of $('mode-tabs').children)
+				button.addEventListener('click', async () => {
+					if (!connected || busy || dragging.size) return
+					const output = currentOutput
+					const mode = Number(button.dataset.mode)
+					if (getOutput(output)?.mode === mode) return
+					busy = true
+					updateControls()
+					try {
+						await finishLevels()
+						await mutate(() => api('routing/mode', 'POST', { output, mode }))
+						getOutput(output).mode = mode
+					} catch (error) {
+						message(error.message, true)
+					} finally {
+						busy = false
+						render()
+					}
+				})
+			const selectedPreset = () => presetData.presets.find((preset) => preset.id === $('preset-list').value)
+			$('load-preset').addEventListener('click', async () => {
+				const preset = selectedPreset()
+				if (preset)
+					await presetOperation(
+						() => api(`routing/presets/${encodeURIComponent(preset.id)}/load`, 'POST', {}),
+						`Loaded “${preset.name}”.`,
+					)
+			})
+			function openNameDialog(mode) {
+				nameMode = mode
+				renamePreset = mode === 'rename' ? selectedPreset() : null
+				if (mode === 'rename' && !renamePreset) return
+				$('dialog-error').hidden = true
+				$('dialog-title').textContent = mode === 'save' ? 'Save routing preset' : 'Rename routing preset'
+				$('submit-name').textContent = mode === 'save' ? 'Save' : 'Rename'
+				$('preset-name').value = renamePreset?.name || ''
+				$('name-dialog').showModal()
+				$('preset-name').focus()
+				$('preset-name').select()
+			}
+			$('save-preset').addEventListener('click', () => openNameDialog('save'))
+			$('rename-preset').addEventListener('click', () => openNameDialog('rename'))
+			$('cancel-name').addEventListener('click', () => $('name-dialog').close())
+			$('name-form').addEventListener('submit', async (event) => {
+				event.preventDefault()
+				const name = $('preset-name').value.trim()
+				if (!name || busy) return
+				if (nameMode === 'rename' && !renamePreset) return
+				const path = nameMode === 'save' ? 'routing/presets' : `routing/presets/${encodeURIComponent(renamePreset.id)}`
+				$('submit-name').disabled = true
+				const success = await presetOperation(
+					() => api(path, 'POST', { name }),
+					nameMode === 'save' ? `Saved “${name}”.` : `Renamed to “${name}”.`,
+				)
+				$('submit-name').disabled = false
+				if (success) {
+					$('name-dialog').close()
+					$('preset-list').value = presetData.presets.find((entry) => entry.name === name)?.id || ''
+					updateControls()
+				}
+			})
+			$('delete-preset').addEventListener('click', async () => {
+				const preset = selectedPreset()
+				if (preset && confirm(`Delete routing preset “${preset.name}”? This cannot be undone.`))
+					await presetOperation(
+						() => api(`routing/presets/${encodeURIComponent(preset.id)}`, 'DELETE'),
+						`Deleted “${preset.name}”.`,
+					)
+			})
+			poll()
+		</script>
+	</body>
+</html>

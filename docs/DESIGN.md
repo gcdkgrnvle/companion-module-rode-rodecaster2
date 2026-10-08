@@ -58,6 +58,112 @@ drive the wrong channel).
 The desk does not echo host writes. Successful writes update the local tree optimistically;
 desk-originated changes update the same tree and refresh the relevant feedbacks and variables.
 
+## Routing page and presets
+
+The module serves a single HTML file with inline CSS and JavaScript at `GET /` and
+`GET /index.html` under Companion's `/instance/<label>/` handler. All API URLs are relative
+to that connection. The example URL is
+`http://127.0.0.1:8000/instance/rodecaster2/`. No separate server, CDN or build step is used.
+
+### Verified routing facts
+
+Captured on Tony's Pro II, firmware 1.7.3, on 2026-10-08. These observations predate the
+routing-page implementation; no hardware was accessed while building it.
+
+- `MIXMINUSES[o].outputMixMinus` is Int32: `0` Main Mix, `1` Mix-minus, `2` Custom. CallMe
+  outputs 10-12 have no mode node (`null`). Reads are proven; host mode writes are **not yet
+  hardware-tested**.
+- Each source/output button cycles linked → unlinked → off (red X) → linked. The host
+  sequences in `src/routing.js` `setCellState` are hardware-verified and update the desk's
+  screen. Their property order is preserved. Linking again snaps level to the anchor; the
+  desk pushes `mixLevelWithAnchor` as `"anchor|anchor"`.
+- `mixLevelWithAnchor` carries `"level|anchor"`, each from 0 to 1. The desk writes send levels
+  even when linked, retaining an offset from the fader anchor. Its screen shows a blue bar
+  between the anchor marker and level handle. Host writes were verified on an unlinked send.
+  The desk encoder's step is 0.01.
+- Desk changes arrive through `device.onChange`, updating the local tree. `GET /routing`
+  returns `{ ready, outputs: [{ output, mode, modeName, cells: [{ source, level, anchor,
+link, disabled, mute }] }], strips: [{ strip, source }] }`. Strip source `-1` is empty.
+- The desk shows one column per fader-assigned source, in strip order, deduplicated and
+  skipping `-1`. Mix-minus tabs exist for Bluetooth, USB 1, USB 1 Chat and USB 2. CallMe tab
+  support is uncertain, so no tabs are shown where mode is `null`. Columns are dimmed and
+  read-only unless the output is Custom.
+- The reference screen uses a back arrow, output icon with previous/next arrows, and home;
+  dark rounded columns, white handles, thin grey anchor markers, blue offset bars, source
+  icons/labels, and bottom buttons: white chain (linked), orange broken chain (unlinked),
+  red X (off). Off columns are dimmed.
+
+The exact protocol order below is checked against `Source` and `MixOutput` in
+`src/protocol/names.js` (there is no `src/names.js`). `mic1` through `mic4` are aliases for the
+actual IDs `combo1` through `combo4`; indices agree with the captured routing facts.
+
+| Source index | Protocol ID                             | Page label                        |
+| ------------ | --------------------------------------- | --------------------------------- |
+| 0-3          | `combo1`-`combo4`                       | Mic 1-4                           |
+| 4-6          | `combo12`, `combo23`, `combo34`         | Combo 1+2, 2+3, 3+4               |
+| 7            | `usb1`                                  | USB 1                             |
+| 8            | `chat`                                  | USB 1 Chat                        |
+| 9            | `usb2`                                  | USB 2                             |
+| 10           | `bluetooth`                             | Bluetooth                         |
+| 11           | `soundpad`                              | Pads                              |
+| 12-15        | `game`, `music`, `virtuala`, `virtualb` | Game, Music, Virtual A, Virtual B |
+| 16-18        | `callme1`-`callme3`                     | CallMe 1-3                        |
+
+| Output index | Protocol ID               | Page label    |
+| ------------ | ------------------------- | ------------- |
+| 0-3          | `headphone1`-`headphone4` | Headphone 1-4 |
+| 4            | `speaker`                 | Monitor       |
+| 5            | `recording`               | Recording     |
+| 6            | `bluetooth`               | Bluetooth     |
+| 7            | `usb1`                    | USB 1         |
+| 8            | `chat`                    | USB 1 Chat    |
+| 9            | `usb2`                    | USB 2         |
+| 10-12        | `callme1`-`callme3`       | CallMe 1-3    |
+
+### Browser behavior and HTTP API
+
+Desk view displays one output and Overview displays outputs by fader-assigned sources.
+The page polls routing approximately every 300 ms, retains local slider values during a
+drag, and throttles writes to at most one per 60 ms per cell, retaining the final value on
+release. Wheel and keyboard steps are 0.01. Disconnection disables controls.
+
+| Method and relative path         | Request / result                                                         |
+| -------------------------------- | ------------------------------------------------------------------------ |
+| `GET routing`                    | Routing snapshot, including `ready`                                      |
+| `POST routing/mode`              | `{ output, mode }`                                                       |
+| `POST routing/cell`              | `{ source, output, state?, level? }`; state is `link`, `unlink` or `off` |
+| `GET routing/presets`            | `{ presets: [{ id, name }], active }`                                    |
+| `POST routing/presets`           | `{ name }`: save the current routing                                     |
+| `POST routing/presets/<id>`      | `{ name }`: rename without changing the stable ID                        |
+| `POST routing/presets/<id>/load` | `{}`: load                                                               |
+| `DELETE routing/presets/<id>`    | Delete; the page requests confirmation                                   |
+
+Inputs are validated before writes: integer source/output indices in range, valid modes and
+state enums, finite levels in 0..1 and nonempty preset names. Mutations reject a desk that is
+not ready. The routing read still reports `ready: false` for the disconnected screen.
+
+### Persistence and application order
+
+Saved presets live in the connection config, alongside the existing recovery fields. Each
+stores every output's mode and every source's state (linked, unlinked or off) and level,
+including sources absent from the page's assigned-fader view. Anchors, strip assignments and
+separate mute controls are not preset data. Stable IDs keep Companion button references
+valid across renames. Preset changes rebuild Companion action/feedback choices and the
+**Routing** template section.
+
+One routing queue serializes complete preset loads and page writes so slider changes cannot
+interleave with a load. A load writes only differences, output by output:
+
+1. If either current or target mode is Custom, ensure Custom before cell changes.
+2. Apply cell states (off changes may precede link changes).
+3. Apply levels after link changes, accounting for relinking snapping back to the anchor.
+4. Apply the target mode last. Outputs without a mode node never receive mode writes.
+
+`Routing preset active` matches all modes and states and permits an absolute level difference
+of at most 0.005. Disconnected desks never match. `routing_preset` is the first matching
+saved preset's name, or empty. Strip, monitor, system and routing updates refresh this value
+and the active feedback; complete updates rebuild definitions too.
+
 ## Individual headphone mix mute
 
 - `headphone_mix_mute` selects Headphone 1-4 (mix outputs 0-3), with on, off and toggle modes.

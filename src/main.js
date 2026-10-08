@@ -1,4 +1,5 @@
 import { InstanceBase, InstanceStatus } from '@companion-module/base'
+import { readFile } from 'node:fs/promises'
 import { RodecasterDevice } from './device.js'
 import { parseStripNames } from './model.js'
 import { updateActions } from './actions.js'
@@ -6,22 +7,34 @@ import { updateFeedbacks } from './feedbacks.js'
 import { updatePresets } from './presets.js'
 import { updateVariableDefinitions, updateVariableValues } from './variables.js'
 import { UpgradeScripts } from './upgrades.js'
-import { routingState, setMode, setCellState, setCellLevel } from './routing.js'
+import { routingState } from './routing.js'
+import { RoutingController, parseRoutingPresets } from './routing-presets.js'
 
 const FEEDBACKS_BY_AREA = {
-	strips: ['strip_muted', 'strip_cued', 'strip_borrowed', 'level_control_locked', 'panic_active'],
-	monitor: ['monitor_muted', 'headphones_off', 'headphone_mix_muted', 'panic_active'],
+	strips: [
+		'strip_muted',
+		'strip_cued',
+		'strip_borrowed',
+		'level_control_locked',
+		'panic_active',
+		'routing_preset_active',
+	],
+	monitor: ['monitor_muted', 'headphones_off', 'headphone_mix_muted', 'panic_active', 'routing_preset_active'],
 	recorder: ['record_state'],
 	pads: ['pad_active', 'pad_colour', 'pad_bank'],
 	fx: ['fx_on'],
 	gui: [],
-	system: ['connected'],
+	system: ['connected', 'routing_preset_active'],
+	routing: ['routing_preset_active'],
 }
 
 export class RodecasterInstance extends InstanceBase {
 	constructor(internal) {
 		super(internal)
 		this.device = new RodecasterDevice()
+		this.routing = new RoutingController(this.device, {
+			onPresetsChanged: (presets) => this.persistRoutingPresets(presets),
+		})
 		/** @type {NodeJS.Timeout | null} */
 		this.clockTimer = null
 		this.definitionsBuilt = false
@@ -29,6 +42,7 @@ export class RodecasterInstance extends InstanceBase {
 
 	async init(config) {
 		this.config = config
+		this.routing.presets = parseRoutingPresets(config.routingPresets)
 		this.applyOptions()
 		this.device.setPendingRepair(parseUnlinked(config.unlinkedSends))
 		this.device.setHeadphoneMutes(parseHeadphoneMutes(config.headphoneMixMutes))
@@ -53,27 +67,68 @@ export class RodecasterInstance extends InstanceBase {
 	}
 
 	/**
-	 * Routing API under /instance/<label>/routing (loopback Companion HTTP).
+	 * Routing page and API under /instance/<label>/ (Companion HTTP).
 	 * @param {import('@companion-module/base').CompanionHTTPRequest} req
 	 */
 	async handleHttpRequest(req) {
-		const json = (status, body) => ({ status, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+		const json = (status, body) => ({
+			status,
+			headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+			body: JSON.stringify(body),
+		})
 		try {
+			if (req.method === 'GET' && (req.path === '/' || req.path === '/index.html')) {
+				return {
+					status: 200,
+					headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' },
+					body: await readFile(new URL('./routing-page.html', import.meta.url), 'utf8'),
+				}
+			}
 			if (req.method === 'GET' && req.path === '/routing') return json(200, routingState(this.device))
 			if (req.method === 'POST' && req.path === '/routing/mode') {
-				const b = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body ?? {})
-				await setMode(this.device, Number(b.output), Number(b.mode))
+				const b = routingBody(req, ['output', 'mode'])
+				await this.routing.setMode(b.output, b.mode)
 				return json(200, { ok: true })
 			}
 			if (req.method === 'POST' && req.path === '/routing/cell') {
-				const b = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body ?? {})
-				if (b.state !== undefined) await setCellState(this.device, Number(b.source), Number(b.output), String(b.state))
-				if (b.level !== undefined) await setCellLevel(this.device, Number(b.source), Number(b.output), Number(b.level))
+				const b = routingBody(req, ['source', 'output', 'state', 'level'])
+				const changes = {}
+				if (Object.hasOwn(b, 'state')) changes.state = b.state
+				if (Object.hasOwn(b, 'level')) changes.level = b.level
+				await this.routing.setCell(b.source, b.output, changes)
 				return json(200, { ok: true })
+			}
+			if (req.path === '/routing/presets' && req.method === 'GET') {
+				if (!this.device.ready) return json(503, { error: 'desk disconnected' })
+				return json(200, { presets: this.routing.listPresets(), active: this.routing.matchingPreset() })
+			}
+			if (req.path === '/routing/presets' && req.method === 'POST') {
+				const b = routingBody(req, ['name'])
+				const preset = await this.routing.savePreset(b.name)
+				return json(201, { preset })
+			}
+			const presetRoute = /^\/routing\/presets\/([^/]+)(\/load)?$/.exec(req.path)
+			if (presetRoute) {
+				const id = decodeURIComponent(presetRoute[1])
+				if (req.method === 'POST' && presetRoute[2]) {
+					routingBody(req, [])
+					await this.routing.loadPreset(id)
+					return json(200, { ok: true })
+				}
+				if (req.method === 'POST' && !presetRoute[2]) {
+					const b = routingBody(req, ['name'])
+					await this.routing.renamePreset(id, b.name)
+					return json(200, { ok: true })
+				}
+				if (req.method === 'DELETE' && !presetRoute[2]) {
+					routingBody(req, [])
+					await this.routing.deletePreset(id)
+					return json(200, { ok: true })
+				}
 			}
 			return json(404, { error: 'not found' })
 		} catch (err) {
-			return json(400, { error: err instanceof Error ? err.message : String(err) })
+			return json(err.statusCode ?? 400, { error: err instanceof Error ? err.message : String(err) })
 		}
 	}
 
@@ -85,7 +140,10 @@ export class RodecasterInstance extends InstanceBase {
 
 	async configUpdated(config) {
 		const serialChanged = (config.serial ?? '') !== (this.config?.serial ?? '')
-		this.config = config
+		// Settings forms may carry an older preset list. The running controller
+		// owns edits made through the page, just as the device owns repair state.
+		this.config = { ...config, routingPresets: JSON.stringify(this.routing.presets) }
+		if (this.config.routingPresets !== (config.routingPresets ?? '[]')) this.saveConfig(this.config)
 		this.applyOptions()
 		this.rebuildDefinitions()
 		// Settings updates can carry an older journal. Keep the recovery state
@@ -213,6 +271,22 @@ export class RodecasterInstance extends InstanceBase {
 			this.log('warn', `could not persist headphone mutes: ${err.message}`)
 		}
 	}
+
+	/** Persist edits before reporting success to the page. */
+	persistRoutingPresets(presets) {
+		const config = { ...this.config, routingPresets: JSON.stringify(presets) }
+		this.saveConfig(config)
+		this.config = config
+		this.rebuildDefinitions()
+	}
+}
+
+/** Parse both Companion's JSON string bodies and its pre-parsed bodies. */
+function routingBody(req, fields) {
+	const body = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body ?? {})
+	if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('body must be a JSON object')
+	if (Object.keys(body).some((key) => !fields.includes(key))) throw new Error('unexpected request field')
+	return body
 }
 
 /** @param {string | undefined} text */
