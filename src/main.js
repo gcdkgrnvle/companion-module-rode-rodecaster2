@@ -9,6 +9,7 @@ import { updateVariableDefinitions, updateVariableValues } from './variables.js'
 import { UpgradeScripts } from './upgrades.js'
 import { routingState } from './routing.js'
 import { RoutingController, parseRoutingPresets } from './routing-presets.js'
+import { DeskApiServer } from './desk-api.js'
 
 const FEEDBACKS_BY_AREA = {
 	strips: [
@@ -35,13 +36,26 @@ export class RodecasterInstance extends InstanceBase {
 		this.routing = new RoutingController(this.device, {
 			onPresetsChanged: (presets) => this.persistRoutingPresets(presets),
 		})
+		this.secrets = {}
+		this.apiError = null
+		this.deskStatus = { state: 'connecting', message: null }
+		this.api = new DeskApiServer(this.device, this.routing, {
+			log: (level, message) => this.log(level, message),
+			onError: (message) => {
+				if (this.apiError === message) return
+				this.apiError = message
+				this.updateConnectionStatus()
+			},
+		})
 		/** @type {NodeJS.Timeout | null} */
 		this.clockTimer = null
 		this.definitionsBuilt = false
 	}
 
-	async init(config) {
-		this.config = config
+	async init(config, _isFirstInit, secrets = {}) {
+		this.config = { ...config }
+		delete this.config.apiKey
+		this.secrets = secrets ?? {}
 		this.routing.presets = parseRoutingPresets(config.routingPresets)
 		this.applyOptions()
 		this.device.setPendingRepair(parseUnlinked(config.unlinkedSends))
@@ -49,9 +63,8 @@ export class RodecasterInstance extends InstanceBase {
 
 		this.device.on('log', (level, msg) => this.log(level, msg))
 		this.device.on('status', (state, message) => {
-			if (state === 'ready') this.updateStatus(InstanceStatus.Ok)
-			else if (state === 'connecting') this.updateStatus(InstanceStatus.Connecting)
-			else this.updateStatus(InstanceStatus.Disconnected, message ?? null)
+			this.deskStatus = { state, message: message ?? null }
+			this.updateConnectionStatus()
 		})
 		this.device.on('update', (area) => this.onUpdate(area))
 		this.device.on('borrowed', (list) => this.persistBorrowed(list))
@@ -59,8 +72,9 @@ export class RodecasterInstance extends InstanceBase {
 
 		updateVariableDefinitions(this)
 		this.rebuildDefinitions()
-		this.updateStatus(InstanceStatus.Connecting)
+		this.updateConnectionStatus()
 		this.device.start()
+		await this.api.configure(this.config, this.secrets)
 		this.clockTimer = setInterval(() => {
 			if (this.device.recordState === 2) this.onUpdate('recorder')
 		}, 1000)
@@ -135,14 +149,17 @@ export class RodecasterInstance extends InstanceBase {
 	async destroy() {
 		if (this.clockTimer) clearInterval(this.clockTimer)
 		this.clockTimer = null
+		await this.api.stop()
 		await this.device.stop()
 	}
 
-	async configUpdated(config) {
+	async configUpdated(config, secrets = this.secrets) {
 		const serialChanged = (config.serial ?? '') !== (this.config?.serial ?? '')
 		// Settings forms may carry an older preset list. The running controller
 		// owns edits made through the page, just as the device owns repair state.
 		this.config = { ...config, routingPresets: JSON.stringify(this.routing.presets) }
+		delete this.config.apiKey
+		this.secrets = secrets ?? {}
 		if (this.config.routingPresets !== (config.routingPresets ?? '[]')) this.saveConfig(this.config)
 		this.applyOptions()
 		this.rebuildDefinitions()
@@ -153,6 +170,14 @@ export class RodecasterInstance extends InstanceBase {
 			await this.device.stop()
 			this.device.start()
 		}
+		await this.api.configure(this.config, this.secrets)
+	}
+
+	updateConnectionStatus() {
+		if (this.apiError) this.updateStatus(InstanceStatus.ConnectionFailure, this.apiError)
+		else if (this.deskStatus.state === 'ready') this.updateStatus(InstanceStatus.Ok)
+		else if (this.deskStatus.state === 'connecting') this.updateStatus(InstanceStatus.Connecting)
+		else this.updateStatus(InstanceStatus.Disconnected, this.deskStatus.message)
 	}
 
 	applyOptions() {
@@ -211,6 +236,36 @@ export class RodecasterInstance extends InstanceBase {
 				type: 'textinput',
 				id: 'stripNames',
 				label: 'Strip names (comma separated, in strip order; empty keeps the default)',
+				width: 12,
+				default: '',
+			},
+			{
+				type: 'checkbox',
+				id: 'apiEnabled',
+				label: 'Enable HTTP API for LAN clients',
+				width: 12,
+				default: false,
+			},
+			{
+				type: 'textinput',
+				id: 'apiBind',
+				label: 'HTTP API listen address',
+				width: 6,
+				default: '0.0.0.0',
+			},
+			{
+				type: 'number',
+				id: 'apiPort',
+				label: 'HTTP API port',
+				width: 6,
+				default: 8765,
+				min: 1,
+				max: 65535,
+			},
+			{
+				type: 'secret-text',
+				id: 'apiKey',
+				label: 'HTTP API key (required when enabled)',
 				width: 12,
 				default: '',
 			},

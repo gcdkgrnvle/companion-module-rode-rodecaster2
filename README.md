@@ -47,6 +47,63 @@ them. Host level writes are verified on unlinked sends; the desk itself also adj
 send offsets. Output mode writes are verified on USB 1 (the desk's tab follows, and custom cell states and levels are kept).
 See [Routing page help](companion/HELP.md#routing-page) for details.
 
+## HTTP API
+
+The optional **HTTP API** lets Stream Deck plugins, Home Assistant and scripts read and change
+desk settings from other computers on the home LAN. In the Companion connection settings,
+enable **HTTP API**, enter a secret **API key**, and save. The default bind address is
+`0.0.0.0`, with port `8765`; the API starts only when enabled with a nonempty key. Changing
+these settings restarts its listener. Give each enabled connection its own port.
+
+This is a separate server inside the module. Keep Companion's unauthenticated administration
+server on `127.0.0.1:8000`; its routing page stays there. The API serves only `/api/v1`.
+Restrict access to the trusted LAN: HTTP does not encrypt the key. On Tony's desktop, allow
+the API port from `192.168.1.0/24` in ufw if that rule is not already present. This is a manual
+firewall step, not something the module changes:
+
+```bash
+sudo ufw allow from 192.168.1.0/24 to any port 8765 proto tcp
+```
+
+Open `http://companion-host:8765/api/v1/docs` for the complete, self-contained route reference.
+Replace `companion-host` with the Companion computer's LAN address. This page and
+`GET /api/v1/health` are public; every other route, including `GET /api/v1/openapi.json`,
+requires `Authorization: Bearer <key>` or `X-API-Key: <key>`. Query-string keys are rejected.
+Set `RODE_API_KEY` in the caller's environment to the configured key before these examples:
+
+```bash
+export RODE_API_URL='http://companion-host:8765/api/v1'
+curl -sS "$RODE_API_URL/state" -H "Authorization: Bearer $RODE_API_KEY"
+curl -sS -X PUT "$RODE_API_URL/strips/1/mute" \
+  -H "Authorization: Bearer $RODE_API_KEY" -H 'Content-Type: application/json' \
+  --data '{"value":"toggle"}'
+curl -sS -X PATCH "$RODE_API_URL/routing/outputs/hp3/sources/mic1" \
+  -H "X-API-Key: $RODE_API_KEY" -H 'Content-Type: application/json' \
+  --data '{"ensureCustom":true,"state":"unlink","level":0.5}'
+```
+
+Resources cover routing and saved routing presets, strips, monitor, headphones, Bluetooth,
+recorder, SMART pads, voice FX, panic mute, display brightness and ducker depth. Strips,
+headphone jacks, pad slots/banks and FX slots are **one-based**, matching Companion presets.
+Routing output/source numbers are **zero-based**; names and aliases such as `hp3`, `monitor`,
+`mic1` and `pads` are easier to read. Responses include canonical names and numeric indexes.
+On/off writes accept `{"value":true}`, `{"value":false}`, `"on"`, `"off"` or `"toggle"`
+as the `value`. Channel level writes require **Let Companion drive channel levels** and use
+the existing fader borrowing rules; `POST /api/v1/strips/restore` hands borrowed faders back.
+Routing cell edits require Custom mode unless `ensureCustom: true` is supplied.
+
+Every successful resource read or write returns JSON with that resource's resulting state.
+For a Stream Deck button, use the response's `muted`, `listen`, `active` or other relevant
+field to set its appearance, then poll the matching GET route to follow desk changes.
+Property writes update the local model optimistically because the desk does not echo host
+writes; this is not independent confirmation of physical hardware behavior. Pad playback
+notifications may arrive after a press response, and recorder elapsed time is tracked locally.
+
+Requests accept JSON bodies up to 64 KiB and send no CORS headers. Errors return JSON
+`{"error":"message"}`: 400 invalid input, 401 missing/wrong key, 404 unknown route/preset,
+409 disabled channel level control or duplicate preset name, 413 oversized body, and
+503 `{"error":"desk disconnected"}` when the desk is unavailable.
+
 ## Install for development
 
 ```bash

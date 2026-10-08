@@ -149,7 +149,7 @@ export function updateActions(self) {
 				// Resolve toggles after the preceding action has updated the desk's local state.
 				const operation = headphoneMuteQueue.then(async () => {
 					const n = Number(e.options.headphone)
-					await dev.setHeadphoneMixMute(n, resolve(String(e.options.mode), dev.headphoneMixMuted(n)))
+					await dev.setHeadphoneMixMute(n, () => resolve(String(e.options.mode), dev.headphoneMixMuted(n)))
 				})
 				headphoneMuteQueue = operation.catch(() => {})
 				await operation
@@ -168,9 +168,7 @@ export function updateActions(self) {
 				'Kills every output; releasing restores exactly what was muted before. Use "on" on press and "off" on release.',
 			options: [modeField],
 			callback: guard('panic', async (e) => {
-				const on = resolve(String(e.options.mode), dev.panicActive)
-				if (on) await dev.panic()
-				else await dev.releasePanic()
+				await dev.queuePanic(() => resolve(String(e.options.mode), dev.panicActive))
 			}),
 		},
 		record: {

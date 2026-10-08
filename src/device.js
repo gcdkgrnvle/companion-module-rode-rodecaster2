@@ -758,6 +758,10 @@ export class RodecasterDevice extends EventEmitter {
 		return this.propNumber(this.outputPath, 'outputBTLevel') ?? 0
 	}
 
+	get bluetoothMuted() {
+		return this.propBool(this.outputPath, 'outputBTMute') ?? false
+	}
+
 	get headphonesOff() {
 		return this.propBool(this.systemPath, 'disableAllHeadphoneOutputs') ?? false
 	}
@@ -809,7 +813,7 @@ export class RodecasterDevice extends EventEmitter {
 	 * before each write: a rejected write might still have reached the desk.
 	 * Panic uses strip/output mutes, so its restore never touches these cells.
 	 * @param {number} n 1..4
-	 * @param {boolean} muted
+	 * @param {boolean | (() => boolean)} muted Resolve toggles inside the shared queue.
 	 */
 	async setHeadphoneMixMute(n, muted) {
 		if (!Number.isInteger(n) || n < 1 || n > 4) throw new Error('headphone must be 1..4')
@@ -817,6 +821,7 @@ export class RodecasterDevice extends EventEmitter {
 		const operation = this.headphoneMuteQueue.then(async () => {
 			try {
 				guard()
+				if (typeof muted === 'function') muted = muted()
 				const cells = this.headphoneMixCells(n)
 				let sources = this.headphoneMutes.get(n)
 				if (!sources) {
@@ -889,13 +894,21 @@ export class RodecasterDevice extends EventEmitter {
 	 * @param {number} ticks signed
 	 */
 	async encoderTicks(ticks) {
+		const guard = this.connectionGuard()
+		guard()
 		const path = this.rootPathOfType('ENCODER')
 		if (!path) throw new Error('no ENCODER node')
 		const n = Math.min(100, Math.abs(ticks))
 		const delta = ticks < 0 ? -1 : 1
 		for (let k = 0; k < n; k++) {
+			// Calculate before awaiting the write: a desk push may already include
+			// this tick by the time the transport acknowledges it.
+			const level = Math.round(clamp01(this.monitorLevel + delta / 100) * 100) / 100
 			this.encoderPhase = !this.encoderPhase
-			await this.write(path, 'encoderSignal', V.binary(encoderSignal(delta, this.encoderPhase)))
+			await this.write(path, 'encoderSignal', V.binary(encoderSignal(delta, this.encoderPhase)), guard)
+			guard()
+			this.tree.getByPath(this.outputPath)?.properties.set('outputMonLevel', V.double(level))
+			this.emit('update', 'monitor')
 		}
 	}
 
@@ -914,6 +927,12 @@ export class RodecasterDevice extends EventEmitter {
 	/** @param {number} level 0..1 */
 	async setBluetoothLevel(level) {
 		await this.write(this.outputPath, 'outputBTLevel', V.double(clamp01(level)))
+		this.emit('update', 'monitor')
+	}
+
+	/** @param {boolean} muted */
+	async setBluetoothMute(muted) {
+		await this.write(this.outputPath, 'outputBTMute', V.bool(muted))
 		this.emit('update', 'monitor')
 	}
 
@@ -989,12 +1008,13 @@ export class RodecasterDevice extends EventEmitter {
 		}
 	}
 
-	/** @param {boolean} muted */
+	/** @param {boolean | (() => boolean)} muted Resolve toggles after previous panic work. */
 	queuePanic(muted) {
 		// The caller keeps its rejection; only the queue tail swallows it so a
 		// later request can retry or reverse direction after a partial failure.
 		const operation = this.panicQueue.then(async () => {
 			try {
+				if (typeof muted === 'function') muted = muted()
 				if (!this.panicSnapshot) {
 					if (!muted) return
 					this.panicSnapshot = this.capturePanic()
@@ -1035,7 +1055,13 @@ export class RodecasterDevice extends EventEmitter {
 
 	/** @param {0 | 1 | 2} state 0 stop, 1 pause, 2 record */
 	async requestRecord(state) {
-		await this.write(this.recorderPath, 'requestRecordState', V.int(state))
+		const guard = this.connectionGuard()
+		await this.write(this.recorderPath, 'requestRecordState', V.int(state), guard)
+		guard()
+		// Request properties are not the state properties read by buttons and API clients.
+		this.tree.getByPath(this.recorderPath)?.properties.set('recordState', V.int(state))
+		this.clock.apply(state)
+		this.emit('update', 'recorder')
 	}
 
 	async dropMarker() {
@@ -1072,13 +1098,16 @@ export class RodecasterDevice extends EventEmitter {
 	 * @param {number | null} bank
 	 */
 	async pressPad(slot, bank = null) {
+		const guard = this.connectionGuard()
+		guard()
 		if (bank !== null && bank !== this.padBank) await this.setPadBank(bank)
+		guard()
 		const paths = this.padButtonPaths()
 		const path = paths[slot]
 		if (!path) throw new Error(`no pad button ${slot + 1}`)
-		await this.write(path, 'padButtonPressed', V.bool(true))
+		await this.write(path, 'padButtonPressed', V.bool(true), guard)
 		await new Promise((r) => setTimeout(r, PAD_PRESS_MS))
-		await this.write(path, 'padButtonPressed', V.bool(false))
+		await this.write(path, 'padButtonPressed', V.bool(false), guard)
 	}
 
 	/**

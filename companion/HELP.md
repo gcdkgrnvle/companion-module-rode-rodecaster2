@@ -61,6 +61,96 @@ firmware 1.7.3. Host level writes were verified on an unlinked send; the desk it
 offsets on linked sends. Output mode values are proven reads, but **host output-mode writes
 still need separate hardware testing**. No hardware testing was performed for this page.
 
+### HTTP API
+
+Enable **HTTP API** in this connection's settings and enter a secret **API key**. The default
+bind address, `0.0.0.0`, accepts connections on the Companion computer's network interfaces;
+the default port is `8765`. The API is disabled by default and refuses to start without a key.
+Saving changes starts, stops or restarts its server. Use a different port for each connection
+if more than one instance enables the API.
+
+The module runs its own server for `/api/v1`. Companion's existing administration server
+must stay on `127.0.0.1:8000` because it has no authentication. The routing page remains on
+that local server and is not exposed by this API. Limit API access to the trusted home LAN;
+HTTP does not encrypt the key.
+
+Tony's desktop uses ufw. If needed, Tony can allow this port only from the home subnet with
+the following command. The module does not change firewall settings:
+
+```bash
+sudo ufw allow from 192.168.1.0/24 to any port 8765 proto tcp
+```
+
+Replace `companion-host` below with the Companion computer's LAN address and change `8765`
+if a different port was configured. Open `http://companion-host:8765/api/v1/docs` for the full
+reference, including every route, request body and curl example. This page works without
+internet access. `GET /api/v1/health` also needs no key and returns `{"ok":true,"connected":true}`
+when the desk is connected. Both public routes remain available when the desk disconnects.
+
+Every other route, including `GET /api/v1/openapi.json`, needs either
+`Authorization: Bearer <key>` or `X-API-Key: <key>`. Keep the key in the caller's settings or
+environment; query-string keys are never accepted. Set `RODE_API_KEY` to the configured key
+before using these examples:
+
+```bash
+export RODE_API_URL='http://companion-host:8765/api/v1'
+curl -sS "$RODE_API_URL/state" -H "Authorization: Bearer $RODE_API_KEY"
+curl -sS -X PUT "$RODE_API_URL/strips/1/mute" \
+  -H "Authorization: Bearer $RODE_API_KEY" -H 'Content-Type: application/json' \
+  --data '{"value":"toggle"}'
+curl -sS -X PUT "$RODE_API_URL/headphones/3/mute" \
+  -H "X-API-Key: $RODE_API_KEY" -H 'Content-Type: application/json' \
+  --data '{"value":true}'
+curl -sS -X PATCH "$RODE_API_URL/routing/outputs/hp3/sources/mic1" \
+  -H "Authorization: Bearer $RODE_API_KEY" -H 'Content-Type: application/json' \
+  --data '{"ensureCustom":true,"state":"unlink","level":0.5}'
+curl -sS -X POST "$RODE_API_URL/recorder/record" -H "Authorization: Bearer $RODE_API_KEY"
+```
+
+API conventions:
+
+- Strip numbers in URLs are **one-based** (`/strips/1` is Companion strip 1), as are headphone
+  jacks 1-4, pad slots/banks 1-8 and voice FX slots. Routing output/source numbers use the
+  protocol's **zero-based** indexes; use names to avoid confusion. Outputs accept
+  `headphone1`-`headphone4`/`hp1`-`hp4`, `speaker`/`monitor`, `recording`/`rec`, `bluetooth`/`bt`,
+  `usb1`, `chat`, `usb2` and `callme1`-`callme3`. Sources accept `combo1`-`combo4`/`mic1`-`mic4`,
+  the stereo combo sources, `usb1`, `chat`, `usb2`, `bluetooth`, `soundpad`/`pads`, `game`,
+  `music`, `virtuala`, `virtualb` and `callme1`-`callme3`. Availability follows the connected
+  desk's layout. Replies include indexes and canonical names.
+- On/off controls accept `{"value":true}`, `{"value":false}`, `{"value":"on"}`,
+  `{"value":"off"}` or `{"value":"toggle"}`. A toggle uses the current device model state.
+- Level controls accept either `{"level":0.5}` (0..1) or `{"delta":-0.05}` (-1..1); deltas
+  are clamped to the level range. Strip level changes require **Let Companion drive channel
+  levels** and borrow faders exactly as Companion actions do. `POST /api/v1/strips/restore`
+  restores all borrowed faders.
+- Routing mode accepts `main`, `mixminus`, `custom` or 0, 1, 2. Routing cell edits require
+  **Custom** mode; `"ensureCustom":true` switches first. Cell state is `link`, `unlink` or
+  `off`, and its level is 0..1. Saved routing presets can be saved, loaded, renamed and
+  deleted under `/routing/presets`; preset URLs accept an ID or a URL-encoded name.
+- Other resource families are `/monitor`, `/headphones`, `/bluetooth`, `/recorder`, `/pads`,
+  `/fx` and `/panic`. Display writes use `/display/screen-brightness` and
+  `/display/button-brightness` with `{"value":128}` (0..255) or `{"pct":50}` (0..100).
+  `/ducker/depth` accepts `{"value":-20}` in dB (-60..0). `GET /state` collects every resource,
+  including display and ducker settings, in one response.
+
+Every successful read and write returns the affected resource's resulting JSON state. A
+strip mute response, for example, includes `strip`, `name`, `source`, `muted`, `listen`,
+`level`, `levelPct` and `fader`. A headphone write returns `allOff` and the full `mixes` list;
+a routing write returns its output or source cell. A deleted preset returns the remaining
+preset list and matching name. Property writes update the module's model optimistically
+because the desk does not echo host writes; the response does not independently prove
+physical hardware behavior. Pad playback changes can arrive after the press reply; recorder
+elapsed time is counted by the module.
+
+For a Stream Deck plugin or Home Assistant control, set the button state from the returned
+field, such as `muted`, `listen` or panic's `active`. Poll the corresponding GET route to
+follow changes made on the desk or by other clients. No CORS headers are sent.
+
+Errors are JSON `{"error":"message"}`: 400 for invalid input or a routing edit outside
+Custom mode, 401 for a missing/wrong key, 404 for an unknown route/preset, 409 for disabled
+channel level control or a duplicate preset name, 413 for a body larger than 64 KiB
+(65,536 bytes), and 503 with `{"error":"desk disconnected"}` when the desk is disconnected.
+
 ### Channel level control
 
 Ships switched off. The desk has no writable fader level; to move a level this module must

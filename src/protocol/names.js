@@ -107,7 +107,7 @@ function vocabulary(ids, labels, aliases, hint) {
 		parse(s) {
 			const clean = String(s).toLowerCase().replace(/[ _-]/g, '')
 			if (byId.has(/** @type {T} */ (clean))) return /** @type {T} */ (clean)
-			return aliases[clean] ?? null
+			return Object.hasOwn(aliases, clean) ? aliases[clean] : null
 		},
 	})
 }
@@ -225,6 +225,7 @@ export const Source = vocabulary(
 		'combo3+4': 'combo34',
 		bt: 'bluetooth',
 		pad: 'soundpad',
+		pads: 'soundpad',
 		virtualgame: 'game',
 		vgame: 'game',
 		virtualmusic: 'music',
