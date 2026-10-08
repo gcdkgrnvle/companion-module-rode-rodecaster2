@@ -10,6 +10,7 @@
  *  - 'headphoneMutes' (list of headphone sends muted here, for persistence)
  */
 import { EventEmitter } from 'node:events'
+import { appendFileSync, existsSync } from 'node:fs'
 import {
 	ProtocolSession,
 	Reassembler,
@@ -1166,6 +1167,7 @@ export class RodecasterDevice extends EventEmitter {
 		const name = c.name
 		if (name === 'meterLevelL' || name === 'meterLevelR' || name === 'meterPeakL' || name === 'meterPeakR') return
 		const cell = L.mixCellFromPath(c.path)
+		if (existsSync(TRACE_FILE)) traceChange(this.tree, c, cell)
 		if (cell) {
 			if (name === 'mixLevelWithAnchor') this.onAnchorChange(cell, c.value)
 			if (cell.mix < 4 && (name === 'mixMute' || name === 'mixDisabled')) this.emit('update', 'monitor')
@@ -1262,3 +1264,21 @@ function encoderSignal(delta, phase) {
 }
 
 export { MixOutput }
+
+// Protocol discovery aid: while this file exists, every desk-originated
+// property change (meters excluded) is appended to it as one JSON line.
+const TRACE_FILE = '/tmp/rodecaster-trace.jsonl'
+
+/** @param {any} tree @param {{ path: number[], name: string, value: any }} c @param {any} cell */
+function traceChange(tree, c, cell) {
+	try {
+		const type = tree?.getByPath(c.path)?.type ?? null
+		const line = JSON.stringify(
+			{ t: new Date().toISOString(), path: c.path, type, cell, name: c.name, value: c.value },
+			(_k, v) => (typeof v === 'bigint' ? v.toString() : Buffer.isBuffer(v) ? v.toString('hex') : v),
+		)
+		appendFileSync(TRACE_FILE, line + '\n')
+	} catch {
+		// tracing must never disturb the desk session
+	}
+}
