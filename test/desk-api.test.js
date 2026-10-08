@@ -309,3 +309,18 @@ test('unexpected request failures return JSON without exposing internal messages
 	assert.deepEqual(result.body, { error: 'internal server error' })
 	assert.ok(logs.every(({ message }) => !message.includes(testKey)))
 })
+
+test('?return=state answers a successful call with the whole desk state and leaves errors alone', async (t) => {
+	const { config, server } = await setup(t)
+	server.resources.state = () => ({ routing: server.resources.routingState(), strips: { strips: [] }, sentinel: true })
+	const plain = await call(config.apiPort, '/api/v1/routing')
+	assert.equal(plain.status, 200)
+	assert.equal(plain.body.sentinel, undefined)
+	const full = await call(config.apiPort, '/api/v1/routing?return=state')
+	assert.equal(full.status, 200)
+	assert.equal(full.body.sentinel, true)
+	assert.deepEqual(full.body.routing, plain.body)
+	const bad = await call(config.apiPort, '/api/v1/routing/outputs/99?return=state')
+	assert.ok(bad.status >= 400)
+	assert.ok('error' in bad.body)
+})

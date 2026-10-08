@@ -205,6 +205,10 @@ export class DeskApiServer {
 			if (req.method === 'GET' && path === '/api/v1/openapi.json') return json(res, 200, openApiDocument)
 			if (!path.startsWith('/api/v1/')) return json(res, 404, { error: 'not found' })
 			const result = await this.resources.handle(req.method, path.slice('/api/v1'.length), body)
+			// ?return=state answers a successful call with the whole desk state, so a
+			// client (e.g. one Companion variable) can refresh every button at once.
+			const wantsState = new URLSearchParams((req.url ?? '').split('?')[1] ?? '').get('return') === 'state'
+			if (wantsState && result.status < 300) return json(res, result.status, this.resources.state())
 			json(res, result.status, result.body)
 		} catch (error) {
 			const status = Number.isInteger(error.statusCode) ? error.statusCode : 500
