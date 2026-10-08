@@ -30,8 +30,9 @@ if (process.platform === 'linux') {
  * All RODECaster control interfaces currently attached.
  * @returns {ControlDeviceInfo[]}
  */
-export function listControlDevices() {
-	return HID.devices()
+export function listControlDevices(hid = HID) {
+	return hid
+		.devices()
 		.filter(
 			(d) => d.vendorId === RODE_VENDOR_ID && (d.interface === CONTROL_INTERFACE || d.usagePage === CONTROL_USAGE_PAGE),
 		)
@@ -45,8 +46,12 @@ export function listControlDevices() {
 }
 
 export class HidTransport extends EventEmitter {
-	constructor() {
+	constructor(hid = HID) {
 		super()
+		this.hid = hid
+		this.generation = 0
+		this.opening = null
+		this.closing = null
 		/** @type {import('node-hid').HIDAsync | null} */
 		this.device = null
 		/** @type {ControlDeviceInfo | null} */
@@ -62,8 +67,21 @@ export class HidTransport extends EventEmitter {
 	 * @param {string} [serial]
 	 * @returns {Promise<ControlDeviceInfo>}
 	 */
-	async open(serial) {
-		const all = listControlDevices()
+	open(serial) {
+		if (this.device) return Promise.resolve(this.info)
+		if (this.opening) return this.opening.promise
+		const generation = ++this.generation
+		const opening = { promise: null }
+		this.opening = opening
+		this.closing = null
+		opening.promise = this._open(serial, generation).finally(() => {
+			if (this.opening === opening) this.opening = null
+		})
+		return opening.promise
+	}
+
+	async _open(serial, generation) {
+		const all = listControlDevices(this.hid)
 		const info = serial ? all.find((d) => d.serialNumber === serial) : all[0]
 		if (!info) {
 			throw new Error(
@@ -72,14 +90,23 @@ export class HidTransport extends EventEmitter {
 					: `no RODECaster with serial ${serial} (attached: ${all.map((d) => d.serialNumber).join(', ')})`,
 			)
 		}
-		const device = await HID.HIDAsync.open(info.path)
+		const device = await this.hid.HIDAsync.open(info.path)
+		const isCurrent = () => this.device === device && this.generation === generation
+		device.on('data', (buf) => {
+			if (isCurrent()) this.emit('report', buf)
+		})
+		device.on('error', (err) => {
+			if (!isCurrent()) return
+			// Detach before notifying listeners: a listener may immediately reopen.
+			void this.close()
+			this.emit('close', err instanceof Error ? err : new Error(String(err)))
+		})
+		if (this.generation !== generation) {
+			await this._closeDevice(device)
+			throw new Error('HID open cancelled')
+		}
 		this.device = device
 		this.info = info
-		device.on('data', (buf) => this.emit('report', buf))
-		device.on('error', (err) => {
-			this.emit('close', err instanceof Error ? err : new Error(String(err)))
-			void this.close()
-		})
 		return info
 	}
 
@@ -91,17 +118,26 @@ export class HidTransport extends EventEmitter {
 		await this.device.write(report)
 	}
 
-	async close() {
+	close() {
+		if (!this.device && !this.opening) return this.closing ?? Promise.resolve()
+		++this.generation
 		const dev = this.device
 		this.device = null
 		this.info = null
-		if (dev) {
-			try {
+		this.opening = null
+		this.closing = dev ? this._closeDevice(dev) : Promise.resolve()
+		return this.closing
+	}
+
+	_closeDevice(dev) {
+		return Promise.resolve()
+			.then(() => {
 				dev.removeAllListeners('data')
-				await dev.close()
-			} catch {
+				// Keep the guarded error listener to absorb late native errors.
+				return dev.close()
+			})
+			.catch(() => {
 				/* already gone */
-			}
-		}
+			})
 	}
 }
