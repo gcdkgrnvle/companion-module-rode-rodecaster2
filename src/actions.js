@@ -43,7 +43,7 @@ export function updateActions(self) {
 		try {
 			await fn(event)
 		} catch (err) {
-			self.log('warn', `${name}: ${err.message}`)
+			if (!err.padUncertaintyReported) self.log('warn', `${name}: ${err.message}`)
 		}
 	}
 
@@ -208,8 +208,8 @@ export function updateActions(self) {
 			],
 			callback: guard('bank', async (e) => {
 				const b = e.options.bank
-				if (b === 'next') await dev.setPadBank(() => (dev.padBank + 1) % 8)
-				else if (b === 'prev') await dev.setPadBank(() => (dev.padBank + 7) % 8)
+				if (b === 'next') await dev.stepPadBank(1)
+				else if (b === 'prev') await dev.stepPadBank(-1)
 				else await dev.setPadBank(Number(b))
 			}),
 		},
