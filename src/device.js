@@ -98,6 +98,9 @@ export class RodecasterDevice extends EventEmitter {
 		this.recordStateRevision = 0
 		this.monitorRequest = null
 		this.monitorLevelRevision = 0
+		this.padRelease = null
+		this.padBankUncertain = false
+		this.padWriteInFlight = null
 		/** @type {ReturnType<RodecasterDevice['capturePanic']> | null} */
 		this.panicSnapshot = null
 		this.connectionGeneration = 0
@@ -313,6 +316,7 @@ export class RodecasterDevice extends EventEmitter {
 		this.readyTimer = null
 		this.syncRequest = null
 		this.ready = true
+		this.reconcilePadState()
 		const caps = this.session.capabilities
 		this.log('info', `ready: ${caps.model} firmware ${caps.firmware}, ${caps.faders.length} strips`)
 		this.clock.apply(this.recordState)
@@ -445,6 +449,7 @@ export class RodecasterDevice extends EventEmitter {
 
 	/** Reject waiting work immediately; an active write retains its slot until settled. */
 	invalidateOperations() {
+		if (this.padRelease) this.reportPadUncertainty(this.padRelease, 'desk connection or layout changed')
 		this.operationEpoch++
 		this.recordRequest = null
 		this.monitorRequest = null
@@ -1209,10 +1214,86 @@ export class RodecasterDevice extends EventEmitter {
 	/** @param {number | (() => number)} bank 0..7 */
 	setPadBank(bank) {
 		return this.queueOperation(async (guard) => {
-			bank = operationValue(bank)
-			await this.write(this.guiPath, 'selectedBank', V.int(Math.max(0, Math.min(7, bank))), guard)
-			this.emit('update', 'pads')
+			await this._releasePad(guard)
+			await this._setPadBank(bank, guard)
 		})
+	}
+
+	/** @param {number} delta signed bank step, resolved after earlier gestures. */
+	stepPadBank(delta) {
+		return this.setPadBank(() => (((this.padBank + delta) % 8) + 8) % 8)
+	}
+
+	checkPadBank() {
+		if (this.padBankUncertain) throw new Error('pad bank is uncertain; select an absolute bank before continuing')
+	}
+
+	async _setPadBank(bank, guard) {
+		guard()
+		if (typeof bank === 'function') this.checkPadBank()
+		bank = operationValue(bank)
+		const value = V.int(Math.max(0, Math.min(7, bank)))
+		// A rejected selection can still reach the desk, leaving the cached bank stale.
+		this.padBankUncertain = true
+		await this._writePad(this.guiPath, 'selectedBank', value, guard)
+		guard()
+		this.padBankUncertain = false
+		this.emit('update', 'pads')
+	}
+
+	/** Track writes which could make a full-sync snapshot stale before they settle. */
+	async _writePad(path, name, value, guard) {
+		guard()
+		const pending = (this.padWriteInFlight = { device: this.transport.device, name })
+		try {
+			await this.write(path, name, value, guard)
+		} finally {
+			// Retire only this write, never state established by a newer operation.
+			if (this.padWriteInFlight === pending) this.padWriteInFlight = null
+		}
+	}
+
+	/**
+	 * A full sync is the only authority for adopting a pending release on a new
+	 * connection. Remap the physical slot, never an old tree path or bank.
+	 */
+	reconcilePadState() {
+		const bank = this.propInt(this.guiPath, 'selectedBank')
+		const lateWrite = this.padWriteInFlight?.device === this.transport.device ? this.padWriteInFlight : null
+		this.padBankUncertain = !Number.isInteger(bank) || bank < 0 || bank > 7 || lateWrite?.name === 'selectedBank'
+		const previous = this.padRelease
+		if (!previous) return
+		const path = this.padButtonPaths()[previous.slot]
+		const pressed = this.propBool(path, 'padButtonPressed')
+		// A trigger already handed to this handle might apply AFTER the snapshot.
+		// Wait for a later full sync in that case; neither a false cache nor a
+		// stale callback may certify that the physical button is released.
+		const unknown = typeof pressed !== 'boolean' || lateWrite?.name === 'padButtonPressed'
+		if (!unknown && pressed === false) {
+			this.padRelease = null
+			return
+		}
+		const pending = (this.padRelease = { ...previous, path, guard: this.connectionGuard(), unknown })
+		if (unknown) return
+		// Normal capacity/priority: panic still precedes the waiting recovery.
+		// Failures remain in padRelease and are retried only as releases by the
+		// next pad/bank operation. _releasePad reports each incident once.
+		void this.queueOperation((guard) => this._releasePad(guard, pending)).catch(() => {})
+	}
+
+	reportPadUncertainty(pending, detail) {
+		if (this.padRelease !== pending || pending.reported) return
+		pending.reported = true
+		this.log('warn', `pad ${pending.slot + 1} in bank ${pending.bank + 1}: outcome uncertain: ${detail}`)
+		this.emit('update', 'pads')
+	}
+
+	padError(pending, message, cause) {
+		this.reportPadUncertainty(pending, message)
+		const err = new Error(message, { cause })
+		// Companion must not log the same uncertainty again for every blocked action.
+		err.padUncertaintyReported = !!pending.reported
+		return err
 	}
 
 	/** PADBUTTON nodes under PHYSICALINTERFACE. @returns {number[][]} paths */
@@ -1229,17 +1310,73 @@ export class RodecasterDevice extends EventEmitter {
 
 	/**
 	 * Fire a pad: slot 0..7 of the current bank, or of `bank` (switches first).
+	 * The current bank is resolved when this gesture reaches the operation queue.
 	 * @param {number} slot
 	 * @param {number | null} bank
 	 */
-	async pressPad(slot, bank = null) {
-		if (bank !== null && bank !== this.padBank) await this.setPadBank(bank)
-		const paths = this.padButtonPaths()
-		const path = paths[slot]
-		if (!path) throw new Error(`no pad button ${slot + 1}`)
-		await this.write(path, 'padButtonPressed', V.bool(true))
-		await new Promise((r) => setTimeout(r, PAD_PRESS_MS))
-		await this.write(path, 'padButtonPressed', V.bool(false))
+	pressPad(slot, bank = null) {
+		return this.queueOperation(async (guard) => {
+			await this._releasePad(guard)
+			guard()
+			const path = this.padButtonPaths()[slot]
+			if (!path || typeof this.propBool(path, 'padButtonPressed') !== 'boolean')
+				throw new Error(`no pad button ${slot + 1}`)
+			const intendedBank = bank === null ? this.padBank : Math.max(0, Math.min(7, bank))
+			if (bank === null) this.checkPadBank()
+			else if (bank !== this.padBank || this.padBankUncertain) await this._setPadBank(bank, guard)
+			guard()
+			this.checkPadBank()
+			if (this.padBank !== intendedBank) throw new Error('pad bank changed before press; trigger cancelled')
+			// Record before attempting the trigger: a rejected write may have sounded it.
+			// Immediate cleanup retains this guard. Only a fresh full sync may
+			// establish a different release record under the new connection guard.
+			const pending = (this.padRelease = { path, slot, bank: this.padBank, guard, reported: false })
+			let pressError
+			try {
+				await this._writePad(path, 'padButtonPressed', V.bool(true), guard)
+				await new Promise((resolve) => this.timers.setTimeout(resolve, PAD_PRESS_MS))
+				guard()
+			} catch (err) {
+				pressError = err
+			}
+			try {
+				await this._releasePad(guard, pending, pressError)
+			} catch (err) {
+				if (!pressError) throw err
+				throw this.padError(pending, `pad press outcome uncertain: ${pressError.message}; ${err.message}`, pressError)
+			}
+			if (pressError)
+				throw this.padError(
+					pending,
+					`pad press outcome uncertain; release acknowledged: ${pressError.message}`,
+					pressError,
+				)
+		})
+	}
+
+	/** Retry only a release, never a trigger, before allowing another pad or bank change. */
+	async _releasePad(operationGuard, pending = this.padRelease, pressError) {
+		if (!pending) return
+		const guard = () => {
+			operationGuard()
+			pending.guard()
+			if (this.padRelease !== pending) throw new Error('desk connection or layout changed')
+			if (pending.unknown) throw new Error('physical pad state unknown; a fresh full sync is required')
+		}
+		try {
+			await this.write(pending.path, 'padButtonPressed', V.bool(false), guard)
+			guard()
+			if (pressError) this.reportPadUncertainty(pending, `press failed; release acknowledged: ${pressError.message}`)
+			guard()
+			this.padRelease = null
+			if (pending.reported) this.emit('update', 'pads')
+		} catch (err) {
+			throw this.padError(
+				pending,
+				`pad ${pending.slot + 1} in bank ${pending.bank + 1}: ${pressError ? `press uncertain: ${pressError.message}; ` : ''}release uncertain; pad and bank actions blocked pending release: ${err.message}`,
+				err,
+			)
+		}
 	}
 
 	/**
