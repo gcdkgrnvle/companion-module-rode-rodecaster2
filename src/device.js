@@ -754,6 +754,16 @@ export class RodecasterDevice extends EventEmitter {
 		return this.propBool(this.outputPath, 'outputMonMute') ?? false
 	}
 
+	/** Desk setting: speakers mute while a microphone is live. Null until the desk reports it. */
+	get monitorAutoMute() {
+		return this.propBool(this.outputPath, 'outputMonAutoMute')
+	}
+
+	/** True while the auto-mute above is silencing the speakers. */
+	get monitorAutoMuteActive() {
+		return this.propBool(this.outputPath, 'outputMonAutoMuteActive')
+	}
+
 	get bluetoothLevel() {
 		return this.propNumber(this.outputPath, 'outputBTLevel') ?? 0
 	}

@@ -38,6 +38,8 @@ function setup(options = {}) {
 		np('OUTPUT', {
 			outputMonLevel: V.double(0.5),
 			outputMonMute: V.bool(false),
+			outputMonAutoMute: V.bool(true),
+			outputMonAutoMuteActive: V.bool(false),
 			outputBTLevel: V.double(0.25),
 			outputBTMute: V.bool(false),
 		}),
@@ -234,7 +236,13 @@ test('strip writes return mute/listen toggles, level borrow state, and restore f
 
 test('monitor and Bluetooth setters and clamped deltas read back updated model values', async () => {
 	const { request, transport } = setup()
-	assert.deepEqual(await request('GET', '/monitor'), { level: 0.5, levelPct: 50, muted: false })
+	assert.deepEqual(await request('GET', '/monitor'), {
+		level: 0.5,
+		levelPct: 50,
+		muted: false,
+		autoMute: true,
+		autoMuteActive: false,
+	})
 	assert.equal((await request('PUT', '/monitor/level', { level: 0.123 })).level, 0.12)
 	assert.equal((await request('PUT', '/monitor/level', { delta: 1 })).level, 1)
 	assert.equal((await request('PUT', '/monitor/mute', { value: true })).muted, true)

@@ -75,6 +75,13 @@ const schemas = {
 	}),
 	Strips: object({ strips: array(ref('Strip')) }),
 	Output: object({ level, levelPct: percent, muted: boolean }),
+	Monitor: object({
+		level,
+		levelPct: percent,
+		muted: boolean,
+		autoMute: { type: ['boolean', 'null'], description: 'Desk setting: speakers mute while a microphone is live.' },
+		autoMuteActive: { type: ['boolean', 'null'], description: 'True while that setting is silencing the speakers.' },
+	}),
 	Headphones: object({
 		allOff: boolean,
 		mixes: array(object({ headphone: index(4, 1), muted: boolean })),
@@ -94,7 +101,7 @@ const schemas = {
 		routing: ref('Routing'),
 		presets: ref('Presets'),
 		strips: ref('Strips'),
-		monitor: ref('Output'),
+		monitor: ref('Monitor'),
 		headphones: ref('Headphones'),
 		bluetooth: ref('Output'),
 		recorder: ref('Recorder'),
@@ -255,12 +262,13 @@ add('put', '/strips/{n}/level', 'Set or adjust channel level', 'Strip', {
 })
 add('post', '/strips/restore', 'Restore all borrowed physical faders', 'Strips', emptyBody)
 for (const output of ['monitor', 'bluetooth']) {
-	add('get', `/${output}`, `Current ${output} level and mute`, 'Output')
-	add('put', `/${output}/level`, `Set or adjust ${output} level`, 'Output', {
+	const schema = output === 'monitor' ? 'Monitor' : 'Output'
+	add('get', `/${output}`, `Current ${output} level and mute`, schema)
+	add('put', `/${output}/level`, `Set or adjust ${output} level`, schema, {
 		body: ref('LevelChange'),
 		example: { delta: -0.05 },
 	})
-	add('put', `/${output}/mute`, `Set or toggle ${output} mute`, 'Output', {
+	add('put', `/${output}/mute`, `Set or toggle ${output} mute`, schema, {
 		body: ref('Toggle'),
 		example: { value: 'toggle' },
 	})

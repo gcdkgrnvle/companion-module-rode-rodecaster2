@@ -294,6 +294,8 @@ export class DeskApiResources {
 			level: this.device.monitorLevel,
 			levelPct: Math.round(this.device.monitorLevel * 100),
 			muted: this.device.monitorMuted,
+			autoMute: this.device.monitorAutoMute,
+			autoMuteActive: this.device.monitorAutoMuteActive,
 		}
 	}
 
