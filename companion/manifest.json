@@ -26,16 +26,6 @@
 	},
 	"legacyIds": [],
 	"manufacturer": "RØDE",
-	"products": [
-		"RØDECaster Pro II",
-		"RØDECaster Duo"
-	],
-	"keywords": [
-		"rode",
-		"rodecaster",
-		"mixer",
-		"podcast",
-		"usb",
-		"hid"
-	]
+	"products": ["RØDECaster Pro II", "RØDECaster Duo"],
+	"keywords": ["rode", "rodecaster", "mixer", "podcast", "usb", "hid"]
 }

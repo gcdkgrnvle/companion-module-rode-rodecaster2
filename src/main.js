@@ -57,7 +57,11 @@ export class RodecasterInstance extends InstanceBase {
 	 * @param {import('@companion-module/base').CompanionHTTPRequest} req
 	 */
 	async handleHttpRequest(req) {
-		const json = (status, body) => ({ status, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+		const json = (status, body) => ({
+			status,
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(body),
+		})
 		try {
 			if (req.method === 'GET' && req.path === '/routing') return json(200, routingState(this.device))
 			if (req.method === 'POST' && req.path === '/routing/mode') {
