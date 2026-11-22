@@ -714,23 +714,33 @@ export class RodecasterDevice extends EventEmitter {
 		this.emit('update', 'strips')
 	}
 
-	/** @param {number} source @param {number[]} mixes @param {RecoveryEntry['identity']} identity */
-	async relinkSends(source, mixes, identity) {
+	/**
+	 * @param {number} source @param {number[]} mixes @param {RecoveryEntry['identity']} identity
+	 * @param {(mix: number) => boolean} [skip] checked right before each send's write
+	 * @returns {Promise<boolean>} false when `skip` left a send unlinked
+	 */
+	async relinkSends(source, mixes, identity, skip = () => false) {
 		const connectionGuard = this.connectionGuard()
 		const guard = () => {
 			connectionGuard()
 			this.checkRecoveryIdentity(identity)
 		}
 		guard()
+		let complete = true
 		for (const mix of mixes) {
 			guard()
 			const path = this.layout.mixCellPath(source, mix)
 			if (!path) continue
+			if (skip(mix)) {
+				complete = false
+				continue
+			}
 			if (this.propBool(path, 'mixLink') === true) continue
 			await this.write(path, 'mixLinkRequest', pressValue(), guard)
 			guard()
 			this.tree.getByPath(path)?.properties.set('mixLink', V.bool(true))
 		}
+		return complete
 	}
 
 	/** Relink everything this module borrowed. */
@@ -801,18 +811,21 @@ export class RodecasterDevice extends EventEmitter {
 				this.checkRecoveryIdentity(entry.identity)
 				// A send repaired on an earlier attempt may have been borrowed again.
 				// Defer that entry until it can be repaired without taking active control.
-				if (
-					[...this.borrowed.values()].some(
-						(e) => e.source === entry.source && e.mixes.some((mix) => entry.mixes.includes(mix)),
-					)
-				)
-					continue
+				// This repair is not queued, so a borrow can also land between its writes:
+				// relinkSends repeats the check right before each send.
+				const borrowedNow = (mix) =>
+					[...this.borrowed.values()].some((e) => e.source === entry.source && e.mixes.includes(mix))
+				if (entry.mixes.some(borrowedNow)) continue
 				if (entry.mixes.some((mix) => !this.layout.mixCellPath(entry.source, mix))) {
 					throw new Error('send is absent from the current layout')
 				}
-				await this.relinkSends(entry.source, entry.mixes, entry.identity)
+				const complete = await this.relinkSends(entry.source, entry.mixes, entry.identity, borrowedNow)
 				guard()
 				this.checkRecoveryIdentity(entry.identity)
+				if (!complete) {
+					this.log('info', `deferred relinking source ${entry.source}: a send was borrowed during the repair`)
+					continue
+				}
 				this.pendingRepair = this.pendingRepair.filter((e) => e !== entry)
 				this.log('info', `relinked sends of source ${entry.source} left borrowed by a previous run`)
 			} catch (err) {
