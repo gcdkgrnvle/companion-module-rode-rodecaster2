@@ -310,6 +310,50 @@ test('retrying a partial repair defers sends reborrowed in this run until they a
 	assert.deepEqual(disk.entries(), [])
 })
 
+test('startup repair never relinks a send that is borrowed again while the repair is in flight', async (t) => {
+	// A borrow that failed halfway before a crash leaves mix 0 unlinked and mix 1
+	// still linked. The repair checks for borrowed sends once, then awaits the
+	// mix 0 write; a borrow in that gap takes mix 1, which is linked right then.
+	const pending = { source: 0, mixes: [0, 1], identity }
+	const disk = journal(t, [pending])
+	const hid = new FakeHid()
+	hid.cell(0, 1).properties.set('mixLink', V.bool(true))
+	const entered = Promise.withResolvers()
+	const resume = Promise.withResolvers()
+	t.after(() => resume.resolve())
+	hid.beforeWrite = async (request) => {
+		if (request.source === 0 && request.mix === 0 && request.name === 'mixLinkRequest') {
+			entered.resolve()
+			await resume.promise
+		}
+	}
+	const app = await start(t, disk, hid)
+	const repairing = app.sync()
+	await entered.promise
+	await app.device.borrowStrip(0)
+	const active = { source: 0, mixes: [1], identity }
+	assert.deepEqual(app.device.borrowed.get(0).mixes, [1])
+	assert.equal(hid.linked(0, 1), false)
+	resume.resolve()
+	await repairing
+
+	assert.equal(hid.linked(0, 0), true, 'the send that was not borrowed is repaired')
+	assert.equal(hid.linked(0, 1), false, 'startup repair must not take back a send borrowed during its write')
+	assert.equal(app.device.borrowed.has(0), true)
+	assert.deepEqual(
+		hid.writes.filter((w) => w.name === 'mixLinkRequest').map(({ mix }) => mix),
+		[0],
+		'no link request may reach the borrowed send',
+	)
+	assert.deepEqual(disk.entries(), [pending, active], 'the deferred repair and the new borrow both stay journaled')
+
+	await app.device.releaseStrip(0)
+	assert.equal(hid.linked(0, 1), true)
+	await app.device.repairOnStart()
+	assert.deepEqual(app.device.pendingRepair, [])
+	assert.deepEqual(disk.entries(), [])
+})
+
 test('partial release keeps borrowed recovery state until every relink succeeds', async (t) => {
 	const disk = journal(t)
 	const hid = new FakeHid()
