@@ -9,7 +9,7 @@ Lets Tony control his RØDECaster Pro II audio desk from Stream Deck through Bit
 - Controls, individual headphone mute, the browser routing page and saved routing setups are implemented.
 - The current branch is `codex/desk-api`; it adds a key-protected web interface for other apps, including full desk-state replies.
 - Notes record this branch running as a Companion developer module on cachyos, with Stream Deck buttons using it (unverified).
-- A startup repair no longer relinks a send that was borrowed again while the repair was running. The fix has a test and is on `main` (`ed9c451`) and on `codex/desk-api` (`7b41f19`, 2026-11-23). cachyos was off at the push, so the desk has not run it yet: the files arrive through Syncthing at its next start.
+- A startup repair no longer relinks a send that was borrowed again while the repair was running. The fix has a test and is on `main` (`ed9c451`) and on `codex/desk-api` (`7b41f19`, 2026-11-23). Companion on cachyos loaded it on 2026-11-23 at 05:05 (module log: initialized, desk opened, 9 strips, no error; the routing endpoint answers). No hardware test was done.
 - It is not in the Companion module store. Duo, macOS and Windows support remain untested; linked routing-level changes still need hardware checks.
 
 ## Decided
